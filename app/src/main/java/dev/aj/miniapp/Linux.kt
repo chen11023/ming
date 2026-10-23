@@ -298,10 +298,12 @@ object Linux {
         ctx: Context,
         script: String,
         onLine: (String) -> Unit,
-        onExit: (Int) -> Unit
+        onExit: (Int) -> Unit,
+        env: Map<String, String> = emptyMap()
     ): Process? {
         return try {
             val pb = ProcessBuilder(prootCommand(ctx, script)).redirectErrorStream(true)
+            pb.environment().putAll(env)
             val defEnvS = mapOf(
                 "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "HOME" to "/root",
