@@ -20,6 +20,10 @@ class MainActivity : Activity() {
     private lateinit var outBox: LinearLayout
     private val outputs by lazy { Outputs(this) }
     private var turnStart = 0L
+    private val attach by lazy { Attach(this) }
+    private val pending = mutableListOf<java.io.File>()
+    private lateinit var attachBtn: android.widget.Button
+    private val PICK = 1001
     private lateinit var chatInput: EditText
     private lateinit var chatSend: android.widget.Button
 
@@ -35,6 +39,7 @@ class MainActivity : Activity() {
         MemoryStore(this).ensure()
         agent = AgentLoop(this, settings) { ev -> onAgentEvent(ev) }
         loadUi()
+        restoreSession()
         startBootstrap()
     }
 
@@ -124,7 +129,20 @@ class MainActivity : Activity() {
         chatSend = android.widget.Button(this).apply {
             text = "发送"
             setOnClickListener { sendChat() }
+            setOnLongClickListener {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setMessage("开始新会话？当前对话会清空，记忆和技能保留。")
+                    .setPositiveButton("清空") { _, _ -> newSession() }
+                    .setNegativeButton("取消", null)
+                    .show()
+                true
+            }
         }
+        attachBtn = android.widget.Button(this).apply {
+            text = "📎"
+            setOnClickListener { pickFiles() }
+        }
+        row.addView(attachBtn)
         row.addView(chatInput, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(chatSend)
         v.addView(row)
@@ -140,16 +158,31 @@ class MainActivity : Activity() {
     private fun sendChat() {
         val t = chatInput.text.toString().trim()
         turnStart = System.currentTimeMillis() - 2000
-        if (t.isEmpty()) return
+        if (t.isEmpty() && pending.isEmpty()) return
         if (!settings.configured) {
             appendChat("错误", "先填 API Key。", 0xFFDC2626.toInt())
             return
         }
         chatInput.setText("")
-        appendChat("你", t, 0xFF2563EB.toInt())
+        appendChat("你", t.ifBlank { "(附件)" }, 0xFF2563EB.toInt())
+        val files = pending.toList()
+        pending.clear()
+        attachBtn.text = "📎"
         chatSend.isEnabled = false
         thread {
-            try { agent.send(t) } catch (e: Exception) {
+            val parts = try {
+                files.flatMap { f ->
+                    attach.parts(f) { line ->
+                        runOnUiThread { appendChat("附件", line, 0xFF6B7280.toInt()) }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { appendChat("错误", "附件处理失败: ${e.message}", 0xFFDC2626.toInt()) }
+                emptyList()
+            }
+            try {
+                agent.send(t.ifBlank { "看看这些附件" }, parts)
+            } catch (e: Exception) {
                 runOnUiThread {
                     appendChat("错误", "${e.javaClass.simpleName}: ${e.message}", 0xFFDC2626.toInt())
                 }
@@ -177,10 +210,80 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun pickFiles() {
+        val i = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        runCatching { startActivityForResult(i, PICK) }.onFailure {
+            appendChat("错误", "打不开文件选择器: ${it.message}", 0xFFDC2626.toInt())
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PICK || resultCode != RESULT_OK || data == null) return
+        val uris = mutableListOf<android.net.Uri>()
+        data.clipData?.let { c -> for (i in 0 until c.count) c.getItemAt(i)?.uri?.let { uris += it } }
+        if (uris.isEmpty()) data.data?.let { uris += it }
+        if (uris.isEmpty()) return
+        thread {
+            for (u in uris) {
+                runCatching { attach.copy(u) }.onSuccess { f ->
+                    runOnUiThread {
+                        pending += f
+                        attachBtn.text = "📎" + pending.size
+                        appendChat("附件", attach.name(f) + "  " + kb(f.length()), 0xFF6B7280.toInt())
+                    }
+                }.onFailure { e ->
+                    runOnUiThread { appendChat("错误", "附件失败: ${e.message}", 0xFFDC2626.toInt()) }
+                }
+            }
+        }
+    }
+
+    private fun kb(n: Long): String = when {
+        n >= 1L shl 20 -> String.format("%.1f MB", n / 1048576.0)
+        n >= 1L shl 10 -> String.format("%.0f KB", n / 1024.0)
+        else -> "$n B"
+    }
+
+    private fun sessionFile(name: String) = java.io.File(filesDir, "sessions/$name").apply { parentFile?.mkdirs() }
+
+    private fun saveTranscript() {
+        val t = chatView.text?.toString().orEmpty()
+        if (t.length > 300000) return
+        runCatching { sessionFile("chat.txt").writeText(t) }
+    }
+
+    private fun restoreSession() {
+        val f = sessionFile("chat.txt")
+        if (f.exists()) runCatching { chatView.text = f.readText() }
+        val n = runCatching { agent.load() }.getOrDefault(0)
+        if (n > 0) {
+            appendChat("提示", "已恢复上次会话（$n 条消息）。长按「发送」可开新会话。", 0xFF6B7280.toInt())
+        }
+    }
+
+    private fun newSession() {
+        runCatching { agent.reset() }
+        chatView.text = ""
+        outBox.removeAllViews()
+        pending.clear()
+        attachBtn.text = "📎"
+        runCatching {
+            sessionFile("chat.txt").delete()
+            sessionFile("last.json").delete()
+        }
+        appendChat("提示", "新会话开始。", 0xFF6B7280.toInt())
+    }
+
     private fun appendChat(tag: String, body: String, color: Int) {
         val cur = chatView.text?.toString().orEmpty()
         chatView.text = if (cur.isEmpty()) "[$tag] $body" else "$cur\n\n[$tag] $body"
         chatView.setTextColor(Color.BLACK)
+        saveTranscript()
         chatScroll.post { chatScroll.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 

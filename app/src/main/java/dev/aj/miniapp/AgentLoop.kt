@@ -56,10 +56,52 @@ class AgentLoop(
 
     fun reset() = history.clear()
 
-    fun send(userText: String) {
+    /** 会话文件：只存对话，不存 system（system 每轮重建） */
+    private val sessionFile: java.io.File
+        get() = java.io.File(ctx.filesDir, "sessions/last.json").apply { parentFile?.mkdirs() }
+
+    fun save() {
+        runCatching {
+            val arr = org.json.JSONArray()
+            history.filter { it.optString("role") != "system" }.forEach { arr.put(it) }
+            sessionFile.writeText(arr.toString())
+        }
+    }
+
+    /** 启动时把上次会话读回来 */
+    fun load(): Int {
+        val f = sessionFile
+        if (!f.exists()) return 0
+        return runCatching {
+            val arr = org.json.JSONArray(f.readText())
+            history.clear()
+            for (i in 0 until arr.length()) history += arr.getJSONObject(i)
+            history.size
+        }.getOrDefault(0)
+    }
+
+    fun send(userText: String, parts: List<JSONObject> = emptyList()) {
+        try {
+            turn(userText, parts)
+        } finally {
+            save()
+        }
+    }
+
+    private fun turn(userText: String, parts: List<JSONObject>) {
         history += JSONObject().apply {
             put("role", "user")
-            put("content", userText)
+            if (parts.isEmpty()) {
+                put("content", userText)
+            } else {
+                val arr = org.json.JSONArray()
+                arr.put(JSONObject().apply {
+                    put("type", "text")
+                    put("text", userText.ifBlank { "(见附件)" })
+                })
+                parts.forEach { arr.put(it) }
+                put("content", arr)
+            }
         }
 
         // 每轮重建 system（记忆/技能会变），旧的丢掉
