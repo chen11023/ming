@@ -188,6 +188,7 @@ object Linux {
             pb.environment()["LANG"] = "C.UTF-8"
             // proot 需要可写的临时目录，否则启动就退
             pb.environment()["PROOT_TMP_DIR"] = ctx.cacheDir.absolutePath
+            pb.environment()["PROOT_NO_SECCOMP"] = "1"
 
             val p = pb.start()
             val out = p.inputStream.bufferedReader().readText()
@@ -218,6 +219,7 @@ object Linux {
             pb.environment()["TERM"] = "xterm"
             pb.environment()["LANG"] = "C.UTF-8"
             pb.environment()["PROOT_TMP_DIR"] = ctx.cacheDir.absolutePath
+            pb.environment()["PROOT_NO_SECCOMP"] = "1"
 
             val p = pb.start()
             p.outputStream.close()
