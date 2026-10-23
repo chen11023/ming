@@ -67,6 +67,9 @@ class TermuxTerm(private val ctx: Context) {
             val proot = Linux.prootPath(ctx)
             if (!proot.exists()) return Result.failure(IllegalStateException("proot 缺失"))
             if (!rootfs.exists()) return Result.failure(IllegalStateException("rootfs 未解压"))
+            // 每次起会话都重写 DNS（换网络后跟着变）
+            val dnsInfo = Linux.writeResolvConf(ctx, rootfs)
+            Log.i("TermuxTerm", "resolv.conf -> $dnsInfo")
 
             val args = arrayOf(
                 "--link2symlink",

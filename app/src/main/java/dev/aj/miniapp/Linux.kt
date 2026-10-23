@@ -35,6 +35,34 @@ object Linux {
 
     fun rootDir(ctx: Context): File = File(ctx.filesDir, "rootfs")
 
+    /**
+     * 写 rootfs/etc/resolv.conf。
+     * Alpine 的 curl/git 走 libc 解析，只看 /etc/resolv.conf；Android 主系统的 DNS 由 netd 管，
+     * 文件里什么都没有 —— 不写这个，proot 里所有域名解析都会 "Could not resolve host"。
+     * DNS 取手机当前活动网络的（VPN/热点都跟着走），取不到再用公共 DNS 兜底。
+     */
+    fun writeResolvConf(ctx: Context, root: File): String {
+        val dns = try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            val lp = cm?.let { it.getLinkProperties(it.activeNetwork) }
+            lp?.dnsServers?.mapNotNull { it.hostAddress }?.filter { it.isNotBlank() }.orEmpty()
+        } catch (e: Throwable) {
+            emptyList()
+        }
+        val use = LinkedHashSet<String>()
+        dns.forEach { use.add(it) }
+        listOf("223.5.5.5", "1.1.1.1", "8.8.8.8").forEach { use.add(it) }
+
+        val f = File(root, "etc/resolv.conf")
+        try {
+            f.parentFile?.mkdirs()
+            f.writeText(use.joinToString("\n") { "nameserver $it" } + "\n")
+        } catch (e: Throwable) {
+            return "写入失败: ${e.javaClass.simpleName}: ${e.message}"
+        }
+        return "DNS=" + use.joinToString(",")
+    }
+
     /** Android 安装后释放原生库的目录，里面有 libproot.so */
     fun libDir(ctx: Context): File = File(ctx.applicationInfo.nativeLibraryDir)
 
@@ -196,6 +224,8 @@ object Linux {
      */
     fun prootCommand(ctx: Context, script: String): List<String> {
         val root = rootDir(ctx)
+        // 聊天里跑的命令和终端走同一套环境，DNS 也要在
+        if (root.exists()) writeResolvConf(ctx, root)
         val lib = libDir(ctx)
         val files = ctx.filesDir
 
@@ -299,6 +329,7 @@ object Linux {
 
         val root = rootDir(ctx)
         val mk = File(root, MARKER)
+        appendLine("网络     : " + writeResolvConf(ctx, root))
         val missing = KEY_PATHS.filter { p ->
             val k = File(root, p)
             !k.isFile || k.length() == 0L
