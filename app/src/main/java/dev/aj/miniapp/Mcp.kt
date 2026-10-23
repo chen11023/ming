@@ -97,6 +97,7 @@ class McpManager(private val ctx: Context) {
     /** 拉齐所有服务器的工具，返回可直接塞进 tools 的 JSON */
     fun toolDefs(): JSONArray {
         val arr = JSONArray()
+        map.clear()
         for (s in servers()) {
             if (!s.enabled) continue
             val conn = start(s) ?: continue
@@ -104,10 +105,20 @@ class McpManager(private val ctx: Context) {
                 val fn = t.optString("name", "")
                 if (fn.isBlank()) continue
                 val schema = t.optJSONObject("inputSchema") ?: JSONObject().apply { put("type", "object") }
+                // 火山/豆包这类接口只认 ^[a-zA-Z0-9_-]{1,64}$，中文名、点号都会被 400 掉，转义成别名再登记回来
+                var alias = "mcp__${safe(s.name)}__${safe(fn)}"
+                if (alias.length > 64) alias = alias.take(64)
+                var uniq = alias
+                var k = 2
+                while (map.containsKey(uniq)) {
+                    uniq = alias.take(60) + "_" + k
+                    k++
+                }
+                map[uniq] = s.name to fn
                 arr.put(JSONObject().apply {
                     put("type", "function")
                     put("function", JSONObject().apply {
-                        put("name", "mcp__${s.name}__$fn")
+                        put("name", uniq)
                         put("description", t.optString("description", "MCP $fn"))
                         put("parameters", schema)
                     })
@@ -117,15 +128,34 @@ class McpManager(private val ctx: Context) {
         return arr
     }
 
+    /** 别名表：给模型的干净名字 → 真实 服务器名 + 工具名 */
+    private val map = mutableMapOf<String, Pair<String, String>>()
+
+    /** 只留 ASCII 字母数字和 _-，其余换下划线 */
+    private fun safe(s: String): String = buildString {
+        for (c in s) {
+            append(if ((c in 'a'..'z') || (c in 'A'..'Z') || (c in '0'..'9') || c == '_' || c == '-') c else '_')
+        }
+    }
+
     fun isMcp(name: String) = name.startsWith("mcp__")
 
     /** 调一个 MCP 工具，返回给模型看的文本 */
     fun call(fullName: String, argsJson: String): String {
-        val rest = fullName.removePrefix("mcp__")
-        val sep = rest.indexOf("__")
-        if (sep <= 0) return "[MCP 错误] 工具名不对: $fullName"
-        val serverName = rest.substring(0, sep)
-        val toolName = rest.substring(sep + 2)
+        val pair = map[fullName]
+        val serverName: String
+        val toolName: String
+        if (pair != null) {
+            serverName = pair.first
+            toolName = pair.second
+        } else {
+            // 别名表没建起来（进程重启后直接调）就退回按名字拆
+            val rest = fullName.removePrefix("mcp__")
+            val sep = rest.indexOf("__")
+            if (sep <= 0) return "[MCP 错误] 工具名不对: $fullName"
+            serverName = rest.substring(0, sep)
+            toolName = rest.substring(sep + 2)
+        }
         val s = servers().firstOrNull { it.name == serverName }
             ?: return "[MCP 错误] 没找到服务器 $serverName"
         val conn = start(s) ?: return "[MCP 错误] $serverName 起不来（检查 command 和依赖）"
