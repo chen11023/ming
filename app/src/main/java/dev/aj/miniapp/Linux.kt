@@ -274,12 +274,16 @@ object Linux {
         ctx: Context,
         script: String,
         timeoutSec: Long = 120,
-        env: Map<String, String> = emptyMap()
+        env: Map<String, String> = emptyMap(),
+        noSeccomp: Boolean = false
     ): Pair<Int, String> {
         return try {
             val pb = ProcessBuilder(prootCommand(ctx, script))
                 .redirectErrorStream(true)
             pb.environment().putAll(env)
+            // noSeccomp=true：关掉 proot 的 seccomp 加速，走完整 ptrace 拦截。
+            // 用于验证 numpy 之类的 SIGSYS("Bad system call") 是不是被 seccomp 拦下的。
+            if (noSeccomp) pb.environment()["PROOT_NO_SECCOMP"] = "1"
             val defEnv = mapOf(
                 "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "HOME" to "/root",
@@ -388,10 +392,44 @@ object Linux {
             // 关键库冒烟：numpy/matplotlib 是画图的地基
             val (nc, no) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
             appendLine("numpy    : exit=$nc  ${no.trim().take(160)}")
+            val (nc2, no2) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120, emptyMap(), true)
+            appendLine("numpy/ns : exit=$nc2  ${no2.trim().take(160)}")
             val (mc, mo) = run(ctx, "python3 -c \"import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180)
             appendLine("mpl      : exit=$mc  ${mo.trim().take(160)}")
+            val (mc2, mo2) = run(ctx, "python3 -c \"import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180, emptyMap(), true)
+            appendLine("mpl/ns   : exit=$mc2  ${mo2.trim().take(160)}")
+
+            // 探 syscall：哪个被 Android seccomp 拦掉（SIGSYS=31）
+            val probe = File(ctx.filesDir, "syscall_probe.py")
+            probe.writeText(SYSCALL_PROBE)
+            val (sc, so) = run(ctx, "python3 /host/syscall_probe.py 2>&1 | tail -2", 120)
+            appendLine("syscall  : exit=$sc  ${so.trim().replace("\n", " ").take(220)}")
             val (fc, fo) = run(ctx, "mkdir -p /var/lib/apk /var/cache/apk /var/tmp && ls -d /var/lib/apk /var/cache/apk && fc-cache -f >/dev/null 2>&1; echo fc=$?", 120)
             appendLine("apk目录  : exit=$fc  ${fo.trim().replace("\n", " ").take(160)}")
         }
     }
 }
+
+/** 逐个 fork 试候选 syscall，报出哪个被 seccomp 杀掉（aarch64 号） */
+private const val SYSCALL_PROBE = """
+import os, ctypes
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+libc.syscall.restype = ctypes.c_long
+CANDS = [("membarrier",283),("rseq",293),("io_uring_setup",425),("pidfd_open",434),("clone3",435),("futex_waitv",449),("sched_setaffinity",122)]
+out = []
+for name, nr in CANDS:
+    pid = os.fork()
+    if pid == 0:
+        try:
+            libc.syscall(nr, 0)
+        except Exception:
+            pass
+        os._exit(0)
+    st = os.waitpid(pid, 0)[1]
+    if os.WIFSIGNALED(st):
+        sig = os.WTERMSIG(st)
+        out.append(name + ("=SIGSYS" if sig == 31 else "=SIG" + str(sig)))
+    else:
+        out.append(name + "=ok")
+print(" ".join(out))
+"""
