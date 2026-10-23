@@ -263,7 +263,7 @@ object Linux {
         val sh = File(root, "bin/sh")
         val bb = File(root, "bin/busybox")
         appendLine("bin/sh   : ${if (sh.exists()) "✅" else "❌"}  busybox=${bb.length()}B")
-        val err = File(root, "..", ".extract_err")
+        val err = File(root.parentFile, ".extract_err")
         if (err.exists()) appendLine("解压错误 : ${err.readText().take(300)}")
 
         if (ready.exists()) {
