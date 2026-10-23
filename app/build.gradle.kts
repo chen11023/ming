@@ -10,7 +10,9 @@ android {
     defaultConfig {
         applicationId = "dev.aj.miniapp"
         minSdk = 26
-        targetSdk = 33
+        // 必须是 28：Android 10+ 对 targetSdk>=29 的应用禁止在数据目录 execve，
+        // proot 起 rootfs 里的 /bin/sh 会 EACCES 直接 255（Termux 自己就是 28）
+        targetSdk = 28
         versionCode = 1
         versionName = "0.1"
         ndk { abiFilters += listOf("arm64-v8a") }
