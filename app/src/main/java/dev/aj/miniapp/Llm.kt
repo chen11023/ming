@@ -40,7 +40,7 @@ class Settings(ctx: Context) {
 
     /** 工具循环最多跑几轮，防止模型死循环 */
     var maxTurns: Int
-        get() = sp.getInt("maxTurns", 8)
+        get() = sp.getInt("maxTurns", 12)
         set(v) = sp.edit().putInt("maxTurns", v.coerceIn(1, 30)).apply()
 
     val configured: Boolean
