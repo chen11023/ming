@@ -17,7 +17,22 @@ object Linux {
 
     private const val TAG = "Linux"
 
-    /** rootfs 解压后的位置 */
+    /** 只有改这个值才会强制重新解压（改 rootfs 内容时同步改它） */
+    private const val ROOTFS_TAG = "alpine3.20.3-p1"
+
+    /** 解压完成标记（内容含 ROOTFS_TAG） */
+    private const val MARKER = ".ready2"
+
+    /** 解压完整性校验用的关键文件（都不是符号链接，能直接判存在与非空） */
+    private val KEY_PATHS = listOf(
+        "bin/busybox",
+        "usr/bin/bash",
+        "usr/bin/curl",
+        "usr/bin/git",
+        "usr/bin/python3.12",
+        "etc/alpine-release",
+    )
+
     fun rootDir(ctx: Context): File = File(ctx.filesDir, "rootfs")
 
     /** Android 安装后释放原生库的目录，里面有 libproot.so */
@@ -25,32 +40,33 @@ object Linux {
 
     fun prootPath(ctx: Context): File = File(libDir(ctx), "libproot.so")
 
-    fun isReady(ctx: Context): Boolean =
-        rootfsMarker(ctx).exists() && prootPath(ctx).exists()
-
-    /** 解压完成标记：解压代码写的是 .ready2，老版本写 .ready，两个都认 */
-    fun rootfsMarker(ctx: Context): File {
+    fun isReady(ctx: Context): Boolean {
         val root = rootDir(ctx)
-        val r2 = File(root, ".ready2")
-        return if (r2.exists()) r2 else File(root, ".ready")
+        val mk = File(root, MARKER)
+        if (!mk.exists()) return false
+        if (!mk.readText().contains("tag=$ROOTFS_TAG")) return false
+        if (KEY_PATHS.any { !File(root, it).isFile || File(root, it).length() == 0L }) return false
+        return prootPath(ctx).exists()
     }
 
     // ---------------------------------------------------------------- 解压
 
     /**
      * 解压 assets/rootfs.tar.gz 到 filesDir/rootfs。
-     * 已完成过就跳过（用 .ready 标记）。
+     * 已解压且标记与当前构建一致才跳过，否则重新解压。
      * @param onProgress 回调已解压文件数，用于显示进度
      */
     fun extractRootfs(
         ctx: Context,
         onProgress: ((Int, String) -> Unit)? = null
     ): Result<Unit> {
-        val dest = rootDir(ctx)
-        val ready = File(dest, ".ready2")
-        if (ready.exists()) return Result.success(Unit)
+        if (isReady(ctx)) return Result.success(Unit)
+        val dest = File(ctx.filesDir, "rootfs_new")
+        val finalDir = rootDir(ctx)
+        val oldDir = File(ctx.filesDir, "rootfs_old")
 
         return try {
+            dest.deleteRecursively()
             dest.mkdirs()
             val t0 = System.currentTimeMillis()
             var count = 0
@@ -106,10 +122,34 @@ object Linux {
             File(dest, "root").mkdirs()
 
             val cost = System.currentTimeMillis() - t0
-            File(dest, ".ready2").writeText("extracted=$count costMs=$cost\n")
+            val missing = KEY_PATHS.filter { p ->
+                val k = File(dest, p)
+                !k.isFile || k.length() == 0L
+            }
+            if (missing.isNotEmpty()) {
+                throw java.io.IOException("解压不完整，缺 ${missing.size} 项: ${missing.joinToString(",")}")
+            }
+            File(dest, MARKER).writeText("tag=$ROOTFS_TAG\nfiles=$count\ncostMs=$cost\n")
+            if (oldDir.exists()) oldDir.deleteRecursively()
+            if (finalDir.exists() && !finalDir.renameTo(oldDir)) {
+                throw java.io.IOException("旧 rootfs 让位失败")
+            }
+            if (!dest.renameTo(finalDir)) throw java.io.IOException("替换 rootfs 失败")
+            oldDir.deleteRecursively()
+            File(ctx.filesDir, ".extract_err").delete()
             onProgress?.invoke(count, "完成")
             Result.success(Unit)
         } catch (e: Exception) {
+            try {
+                File(ctx.filesDir, ".extract_err").writeText(
+                    "${BuildConfig.BUILD_TAG} ${e.javaClass.simpleName}: ${e.message}\n"
+                )
+            } catch (_: Exception) {
+            }
+            try {
+                dest.deleteRecursively()
+            } catch (_: Exception) {
+            }
             Result.failure(e)
         }
     }
@@ -251,7 +291,6 @@ object Linux {
 
     /** 返回几行动诊断信息，给设置页显示 */
     fun diagnose(ctx: Context): String = buildString {
-        appendLine("版本     : ${BuildConfig.VERSION_NAME}  (${BuildConfig.BUILD_TAG})")
         appendLine("dataDir  : ${ctx.filesDir}")
         appendLine("nativeLib: ${libDir(ctx)}")
 
@@ -259,16 +298,27 @@ object Linux {
         appendLine("proot    : ${if (proot.exists()) "${proot.length()} B" else "❌ 缺失"}")
 
         val root = rootDir(ctx)
-        val ready = rootfsMarker(ctx)
-        // busybox 真在就算解压成功（绝对符号链接在 App 侧 exists() 会是 false）
-        val rootfsOk = ready.exists() || File(root, "bin/busybox").exists()
-        appendLine("rootfs   : ${if (rootfsOk) "✅ 已解压" else "❌ 未解压"}")
+        val mk = File(root, MARKER)
+        val missing = KEY_PATHS.filter { p ->
+            val k = File(root, p)
+            !k.isFile || k.length() == 0L
+        }
+        val ok = isReady(ctx)
+        appendLine("版本     : ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TAG})")
+        appendLine("rootfs   : ${if (ok) "✅ 已解压" else "❌ 未解压"}")
 
-        if (ready.exists()) {
-            appendLine("标记文件 : ${ready.readText().trim()}")
+        if (mk.exists()) {
+            appendLine("标记文件 : ${mk.readText().trim().replace("\n", " / ")}")
+        }
+        if (missing.isNotEmpty()) {
+            appendLine("缺失     : ${missing.joinToString(",")}")
+        }
+        val err = File(ctx.filesDir, ".extract_err")
+        if (err.exists()) {
+            appendLine("解压错误 : ${err.readText().trim()}")
         }
 
-        if (proot.exists() && rootfsOk) {
+        if (proot.exists() && ok) {
             val (code, out) = run(ctx, "cat /etc/alpine-release 2>/dev/null; uname -m", 30)
             appendLine("自检     : exit=$code")
             appendLine(out.take(500))
