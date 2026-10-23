@@ -85,6 +85,7 @@ class TermuxTerm(private val ctx: Context) {
                 "LANG=C.UTF-8",
                 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "PROOT_TMP_DIR=${ctx.cacheDir.absolutePath}",
+                "PROOT_NO_SECCOMP=1",
             )
 
             val s = TerminalSession(
