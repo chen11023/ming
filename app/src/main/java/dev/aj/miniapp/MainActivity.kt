@@ -155,7 +155,7 @@ class MainActivity : Activity() {
                 is AgentLoop.Event.Answer ->
                     appendChat("AJ", ev.text, 0xFF111827.toInt())
                 is AgentLoop.Event.Error ->
-                    appendChat("错误", ev.text, 0xFFDC2626.toInt())
+                    appendChat("错误", ev.msg, 0xFFDC2626.toInt())
             }
         }
     }
