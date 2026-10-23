@@ -40,6 +40,7 @@ class MainActivity : Activity() {
         agent = AgentLoop(this, settings) { ev -> onAgentEvent(ev) }
         loadUi()
         restoreSession()
+        thread { runCatching { Linux.cleanup(this@MainActivity) } }
         startBootstrap()
     }
 

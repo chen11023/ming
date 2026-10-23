@@ -35,7 +35,7 @@ jobs:
           set -e
           mkdir -p app/src/main/assets
           curl -fsSL --retry 3 -o /tmp/alpine.tar.gz \
-            "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.3-aarch64.tar.gz"
+            "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/alpine-minirootfs-3.22.6-aarch64.tar.gz"
           ls -la /tmp/alpine.tar.gz
 
       # ---------- 3. 往 rootfs 里预装常用包（跨架构安装） ----------
@@ -48,7 +48,7 @@ jobs:
 
           # 优先用 alpine 官方 apk 静态二进制做跨架构安装
           curl -fsSL -o /tmp/apk.static \
-            "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/apk-tools-static-2.14.4-r1.apk" || true
+            "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/apk-tools-static-2.14.12-r0.apk" || true
           if [ -s /tmp/apk.static ]; then
             mkdir -p /tmp/apkx && tar xzf /tmp/apk.static -C /tmp/apkx 2>/dev/null || true
             APK=$(find /tmp/apkx -name "apk.static" -o -name "apk" -type f | head -1)
@@ -62,10 +62,12 @@ jobs:
                          py3-docx py3-pdfminer ffmpeg poppler-utils font-noto-cjk; do
                 echo "=== install $pkg"
                 sudo "$APK" --root /tmp/rootfs --arch aarch64 \
-                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
-                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/main \
+                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/community \
                   --allow-untrusted --no-cache add "$pkg" 2>&1 | tail -3 || echo "skip $pkg"
               done
+              mkdir -p /tmp/rootfs/var/lib/apk /tmp/rootfs/var/cache/apk /tmp/rootfs/var/tmp
+              chmod 1777 /tmp/rootfs/var/tmp
               echo "--- installed:"; ls /tmp/rootfs/usr/bin | tr '\n' ' ' | head -c 2000
               ls /tmp/rootfs/usr/bin/python3* 2>/dev/null || echo "python3 未装入（不影响启动）"
               tar czf app/src/main/assets/rootfs.tar.gz -C /tmp/rootfs . || true

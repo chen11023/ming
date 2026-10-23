@@ -18,7 +18,7 @@ object Linux {
     private const val TAG = "Linux"
 
     /** 只有改这个值才会强制重新解压（改 rootfs 内容时同步改它） */
-    private const val ROOTFS_TAG = "alpine3.20.3-p3"
+    private const val ROOTFS_TAG = "alpine3.22.6-p4"
 
     /** 解压完成标记（内容含 ROOTFS_TAG） */
     private const val MARKER = ".ready2"
@@ -41,6 +41,18 @@ object Linux {
      * 文件里什么都没有 —— 不写这个，proot 里所有域名解析都会 "Could not resolve host"。
      * DNS 取手机当前活动网络的（VPN/热点都跟着走），取不到再用公共 DNS 兜底。
      */
+    /** inbox / out 只留最近 keep 个，防止堆到几个 G */
+    fun cleanup(ctx: Context, keep: Int = 30) {
+        for (name in listOf("inbox", "out")) {
+            val dir = File(ctx.filesDir, name)
+            if (!dir.isDirectory) continue
+            runCatching {
+                val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: return@runCatching
+                files.drop(keep).forEach { f -> runCatching { if (f.isDirectory) f.deleteRecursively() else f.delete() } }
+            }
+        }
+    }
+
     /** 产物输出目录（挂进 proot 的 /out） */
     fun outDir(ctx: Context): File = File(ctx.filesDir, "out").apply { mkdirs() }
 
@@ -160,6 +172,8 @@ object Linux {
             if (missing.isNotEmpty()) {
                 throw java.io.IOException("解压不完整，缺 ${missing.size} 项: ${missing.joinToString(",")}")
             }
+            // apk 需要这两个目录，否则每次 add 都因写缓存失败返回 5
+            for (d in listOf("var/lib/apk", "var/cache/apk", "var/tmp")) File(dest, d).mkdirs()
             File(dest, MARKER).writeText("tag=$ROOTFS_TAG\nfiles=$count\ncostMs=$cost\n")
             if (oldDir.exists()) oldDir.deleteRecursively()
             if (finalDir.exists() && !finalDir.renameTo(oldDir)) {
@@ -369,7 +383,15 @@ object Linux {
         if (proot.exists() && ok) {
             val (code, out) = run(ctx, "cat /etc/alpine-release 2>/dev/null; uname -m", 30)
             appendLine("自检     : exit=$code")
-            appendLine(out.take(500))
+            appendLine(out.take(300))
+
+            // 关键库冒烟：numpy/matplotlib 是画图的地基
+            val (nc, no) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
+            appendLine("numpy    : exit=$nc  ${no.trim().take(160)}")
+            val (mc, mo) = run(ctx, "python3 -c \"import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180)
+            appendLine("mpl      : exit=$mc  ${mo.trim().take(160)}")
+            val (fc, fo) = run(ctx, "mkdir -p /var/lib/apk /var/cache/apk /var/tmp && ls -d /var/lib/apk /var/cache/apk && fc-cache -f >/dev/null 2>&1; echo fc=$?", 120)
+            appendLine("apk目录  : exit=$fc  ${fo.trim().replace("\n", " ").take(160)}")
         }
     }
 }
