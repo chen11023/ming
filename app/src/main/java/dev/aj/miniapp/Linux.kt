@@ -239,10 +239,34 @@ object Linux {
      * 拼一条在 rootfs 里执行的 proot 命令。
      * @param script 交给 /bin/sh -c 的脚本
      */
+    /**
+     * 给 rootfs 里的 python 打 SIGSYS 补丁。
+     * Android 的 app seccomp 会拦 rseq/clone3/mbind/io_uring 这类调用并直接 SIGSYS 杀进程，
+     * numpy、matplotlib 一 import 就 "Bad system call"。装了空处理器后这些调用退化成 ENOSYS。
+     */
+    fun patchPython(ctx: Context) {
+        val root = rootDir(ctx)
+        if (!root.exists()) return
+        val dirs = listOf("usr/lib/python3.12/site-packages", "usr/lib/python3.11/site-packages")
+        for (d in dirs) {
+            val dir = File(root, d)
+            if (!dir.isDirectory) continue
+            val f = File(dir, "sitecustomize.py")
+            try {
+                if (f.exists() && f.readText() == SITECUSTOMIZE) continue
+                f.writeText(SITECUSTOMIZE)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun prootCommand(ctx: Context, script: String): List<String> {
         val root = rootDir(ctx)
         // 聊天里跑的命令和终端走同一套环境，DNS 也要在
-        if (root.exists()) writeResolvConf(ctx, root)
+        if (root.exists()) {
+            writeResolvConf(ctx, root)
+            patchPython(ctx)
+        }
         outDir(ctx)
         val lib = libDir(ctx)
         val files = ctx.filesDir
@@ -390,28 +414,32 @@ object Linux {
             appendLine(out.take(300))
 
             // 关键库冒烟：numpy/matplotlib 是画图的地基
+            patchPython(ctx)
+            val sc0 = File(root, "usr/lib/python3.12/site-packages/sitecustomize.py")
+            appendLine("py补丁   : ${if (sc0.exists()) "✅ ${sc0.length()} B" else "❌ 未写入"}")
             val (nc, no) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
             appendLine("numpy    : exit=$nc  ${no.trim().take(160)}")
-            // 装个 SIGSYS 空处理器：被 seccomp 拦的 syscall 退化成 ENOSYS，而不是杀进程
-            val (nc2, no2) = run(ctx, "python3 -c \"import signal;signal.signal(signal.SIGSYS,lambda *a:None);import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
-            appendLine("numpy/sig: exit=$nc2  ${no2.trim().take(160)}")
-            val (nv, nvo) = run(ctx, "python3 -v -c \"import numpy\" 2>&1 | tail -6", 120)
-            appendLine("py -v    : exit=$nv  ${nvo.trim().replace("\n", " | ").take(320)}")
-            val (mc, mo) = run(ctx, "python3 -c \"import signal;signal.signal(signal.SIGSYS,lambda *a:None);import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180)
-            appendLine("mpl/sig  : exit=$mc  ${mo.trim().take(160)}")
-            val (pc, po) = run(ctx, "echo hi", 60, emptyMap(), true)
-            appendLine("proot/ns : exit=$pc  ${po.trim().replace("\n", " ").take(200)}")
+            val (mc, mo) = run(ctx, "python3 -c \"import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180)
+            appendLine("mpl      : exit=$mc  ${mo.trim().take(160)}")
 
             // 探 syscall：哪个被 Android seccomp 拦掉（SIGSYS=31）
             val probe = File(ctx.filesDir, "syscall_probe.py")
             probe.writeText(SYSCALL_PROBE)
             val (sc, so) = run(ctx, "python3 /host/syscall_probe.py 2>&1 | tail -3", 120)
-            appendLine("syscall  : exit=$sc  ${so.trim().replace("\n", " ").take(320)}")
+            appendLine("syscall  : exit=$sc  ${so.trim().replace("\n", " ").take(200)}")
             val (fc, fo) = run(ctx, "mkdir -p /var/lib/apk /var/cache/apk /var/tmp && ls -d /var/lib/apk /var/cache/apk && fc-cache -f >/dev/null 2>&1; echo fc=$?", 120)
             appendLine("apk目录  : exit=$fc  ${fo.trim().replace("\n", " ").take(160)}")
         }
     }
 }
+
+private const val SITECUSTOMIZE = """
+import signal
+try:
+    signal.signal(signal.SIGSYS, lambda *a: None)
+except Exception:
+    pass
+"""
 
 /** 逐个 fork 试候选 syscall，报出哪个被 seccomp 杀掉（aarch64 号） */
 private const val SYSCALL_PROBE = """
