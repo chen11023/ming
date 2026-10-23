@@ -56,11 +56,17 @@ jobs:
             if [ -n "$APK" ]; then
               mkdir -p /tmp/rootfs
               sudo tar xzf /tmp/alpine.tar.gz -C /tmp/rootfs || tar xzf /tmp/alpine.tar.gz -C /tmp/rootfs
-              sudo "$APK" --root /tmp/rootfs --arch aarch64 \
-                --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
-                --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
-                --allow-untrusted --no-cache \
-                add bash python3 curl git nano 2>&1 | tail -20 || true
+              # 逐个装，某个包名不存在时只跳过它，不整体失败
+              for pkg in bash python3 curl git nano \
+                         py3-pillow py3-matplotlib py3-numpy py3-openpyxl \
+                         py3-docx py3-pdfminer ffmpeg poppler-utils font-noto-cjk; do
+                echo "=== install $pkg"
+                sudo "$APK" --root /tmp/rootfs --arch aarch64 \
+                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
+                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+                  --allow-untrusted --no-cache add "$pkg" 2>&1 | tail -3 || echo "skip $pkg"
+              done
+              echo "--- installed:"; ls /tmp/rootfs/usr/bin | tr '\n' ' ' | head -c 2000
               ls /tmp/rootfs/usr/bin/python3* 2>/dev/null || echo "python3 未装入（不影响启动）"
               tar czf app/src/main/assets/rootfs.tar.gz -C /tmp/rootfs . || true
               ls -la app/src/main/assets/

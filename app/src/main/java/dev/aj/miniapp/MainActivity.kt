@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.view.inputmethod.EditorInfo
 import kotlin.concurrent.thread
@@ -15,6 +16,10 @@ class MainActivity : Activity() {
     private var term: TermuxTerm? = null
 
     private lateinit var chatView: TextView
+    private lateinit var chatScroll: android.widget.ScrollView
+    private lateinit var outBox: LinearLayout
+    private val outputs by lazy { Outputs(this) }
+    private var turnStart = 0L
     private lateinit var chatInput: EditText
     private lateinit var chatSend: android.widget.Button
 
@@ -95,7 +100,14 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, 24)
             setTextColor(0xFF111827.toInt())
         }
-        scroll.addView(chatView)
+        outBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val chatCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(chatView)
+            addView(outBox)
+        }
+        scroll.addView(chatCol)
+        chatScroll = scroll
         v.addView(scroll, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
 
         val row = android.widget.LinearLayout(this).apply {
@@ -127,6 +139,7 @@ class MainActivity : Activity() {
 
     private fun sendChat() {
         val t = chatInput.text.toString().trim()
+        turnStart = System.currentTimeMillis() - 2000
         if (t.isEmpty()) return
         if (!settings.configured) {
             appendChat("错误", "先填 API Key。", 0xFFDC2626.toInt())
@@ -154,8 +167,10 @@ class MainActivity : Activity() {
                     appendChat("执行", ev.cmd, 0xFF7C3AED.toInt())
                 is AgentLoop.Event.Output ->
                     appendChat("输出", ev.text.ifBlank { "(无输出)" }, 0xFF059669.toInt())
-                is AgentLoop.Event.Answer ->
+                is AgentLoop.Event.Answer -> {
                     appendChat("AJ", ev.text, 0xFF111827.toInt())
+                    outputs.render(outBox, turnStart)
+                }
                 is AgentLoop.Event.Error ->
                     appendChat("错误", ev.msg, 0xFFDC2626.toInt())
             }
@@ -166,10 +181,7 @@ class MainActivity : Activity() {
         val cur = chatView.text?.toString().orEmpty()
         chatView.text = if (cur.isEmpty()) "[$tag] $body" else "$cur\n\n[$tag] $body"
         chatView.setTextColor(Color.BLACK)
-        val parent = chatView.parent as? android.view.View
-        if (parent is android.widget.ScrollView) {
-            parent.post { parent.fullScroll(android.view.View.FOCUS_DOWN) }
-        }
+        chatScroll.post { chatScroll.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 
     // ------------------------------------------------------------ 终端页

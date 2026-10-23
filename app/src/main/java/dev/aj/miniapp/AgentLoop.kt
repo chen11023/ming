@@ -34,6 +34,9 @@ class AgentLoop(
     /** 系统提示 = 基础人格 + 记忆 + 命中技能的正文（每轮重算，记忆和技能随时生效） */
     private fun buildSystem(userText: String): String {
         val sb = StringBuilder(settings.systemPrompt.trim())
+        sb.append("\n\n## 产物输出\n")
+        sb.append("图片、图表、视频、文档等产物一律写进 /out 目录（例如 /out/chart.png）。")
+        sb.append("写完后只回一句说明路径，不要把 base64 或 ANSI 彩色字符贴进对话——App 会自动在聊天里显示 /out 里的新文件。\n")
         val mem = memory.recent()
         if (mem.isNotBlank()) {
             sb.append("\n\n## 记忆（之前的对话，供参考）\n").append(mem)

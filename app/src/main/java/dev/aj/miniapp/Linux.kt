@@ -18,7 +18,7 @@ object Linux {
     private const val TAG = "Linux"
 
     /** 只有改这个值才会强制重新解压（改 rootfs 内容时同步改它） */
-    private const val ROOTFS_TAG = "alpine3.20.3-p2"
+    private const val ROOTFS_TAG = "alpine3.20.3-p3"
 
     /** 解压完成标记（内容含 ROOTFS_TAG） */
     private const val MARKER = ".ready2"
@@ -41,6 +41,9 @@ object Linux {
      * 文件里什么都没有 —— 不写这个，proot 里所有域名解析都会 "Could not resolve host"。
      * DNS 取手机当前活动网络的（VPN/热点都跟着走），取不到再用公共 DNS 兜底。
      */
+    /** 产物输出目录（挂进 proot 的 /out） */
+    fun outDir(ctx: Context): File = File(ctx.filesDir, "out").apply { mkdirs() }
+
     fun writeResolvConf(ctx: Context, root: File): String {
         val dns = try {
             val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
@@ -226,6 +229,7 @@ object Linux {
         val root = rootDir(ctx)
         // 聊天里跑的命令和终端走同一套环境，DNS 也要在
         if (root.exists()) writeResolvConf(ctx, root)
+        outDir(ctx)
         val lib = libDir(ctx)
         val files = ctx.filesDir
 
@@ -240,6 +244,8 @@ object Linux {
             "-b", "/system",
             // 把 App 私有目录挂成 /host，方便脚本读写宿主数据
             "-b", "${files.absolutePath}:/host",
+            // /out 单独挂出来：产物写这里，App 会在聊天里回显
+            "-b", "${File(files, "out").absolutePath}:/out",
             // 让 rootfs 里的程序能找到 proot 自带的依赖库
             "-w", "/root",
             "/bin/sh", "-c", script
@@ -260,11 +266,16 @@ object Linux {
             val pb = ProcessBuilder(prootCommand(ctx, script))
                 .redirectErrorStream(true)
             pb.environment().putAll(env)
-            pb.environment()["HOME"] = "/root"
-            pb.environment()["TERM"] = "xterm"
-            pb.environment()["LANG"] = "C.UTF-8"
-            // proot 需要可写的临时目录，否则启动就退
-            pb.environment()["PROOT_TMP_DIR"] = ctx.cacheDir.absolutePath
+            val defEnv = mapOf(
+                "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME" to "/root",
+                "TERM" to "xterm",
+                "LANG" to "C.UTF-8",
+                "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath
+            )
+            // 默认值只在用户没给时补上；PATH 必须有，否则 proot 里连 sh 都找不到
+            // 只看用户是否显式给了同名变量；App 进程自带的那套 Android PATH 不能沿用
+            defEnv.forEach { (k, v) -> if (!env.containsKey(k)) pb.environment()[k] = v }
 
             val p = pb.start()
             val out = p.inputStream.bufferedReader().readText()
@@ -291,10 +302,14 @@ object Linux {
     ): Process? {
         return try {
             val pb = ProcessBuilder(prootCommand(ctx, script)).redirectErrorStream(true)
-            pb.environment()["HOME"] = "/root"
-            pb.environment()["TERM"] = "xterm"
-            pb.environment()["LANG"] = "C.UTF-8"
-            pb.environment()["PROOT_TMP_DIR"] = ctx.cacheDir.absolutePath
+            val defEnvS = mapOf(
+                "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME" to "/root",
+                "TERM" to "xterm",
+                "LANG" to "C.UTF-8",
+                "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath
+            )
+            defEnvS.forEach { (k, v) -> if (!env.containsKey(k)) pb.environment()[k] = v }
 
             val p = pb.start()
             p.outputStream.close()
