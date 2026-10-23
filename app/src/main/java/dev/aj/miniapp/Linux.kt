@@ -40,7 +40,7 @@ object Linux {
         onProgress: ((Int, String) -> Unit)? = null
     ): Result<Unit> {
         val dest = rootDir(ctx)
-        val ready = File(dest, ".ready")
+        val ready = File(dest, ".ready2")
         if (ready.exists()) return Result.success(Unit)
 
         return try {
@@ -60,6 +60,24 @@ object Linux {
                             val f = File(dest, name)
                             if (entry.isDirectory) {
                                 f.mkdirs()
+                            } else if (entry.isSymbolicLink) {
+                                f.parentFile?.mkdirs()
+                                try {
+                                    java.nio.file.Files.deleteIfExists(f.toPath())
+                                    java.nio.file.Files.createSymbolicLink(
+                                        f.toPath(), java.nio.file.Paths.get(entry.linkName)
+                                    )
+                                } catch (_: Exception) {
+                                }
+                                count++
+                            } else if (entry.isLink) {
+                                val tgt = File(dest, entry.linkName.removePrefix("./"))
+                                f.parentFile?.mkdirs()
+                                try {
+                                    if (tgt.exists()) tgt.copyTo(f, overwrite = true)
+                                } catch (_: Exception) {
+                                }
+                                count++
                             } else {
                                 f.parentFile?.mkdirs()
                                 f.outputStream().use { tar.copyTo(it) }
@@ -81,7 +99,7 @@ object Linux {
             File(dest, "root").mkdirs()
 
             val cost = System.currentTimeMillis() - t0
-            File(dest, ".ready").writeText("extracted=$count costMs=$cost\n")
+            File(dest, ".ready2").writeText("extracted=$count costMs=$cost\n")
             onProgress?.invoke(count, "完成")
             Result.success(Unit)
         } catch (e: Exception) {
