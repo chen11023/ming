@@ -228,7 +228,7 @@ class MainActivity : Activity() {
             val r = t.start()
             term = t
             val dx = java.io.File(filesDir, "rootfs").let { d ->
-                "rootfs sh=${java.io.File(d, "bin/sh").exists()} bb=" +
+                "rootfs busybox=" +
                     java.io.File(d, "bin/busybox").length() + "B"
             }
             termStatus.text = if (r.isSuccess) "Alpine · proot · 点屏幕出键盘\n$dx"

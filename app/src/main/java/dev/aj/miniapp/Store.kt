@@ -194,11 +194,28 @@ class SkillsStore(private val ctx: Context) {
             if (task.contains(w)) return true
             var i = 0
             while (i + 2 <= w.length) {
-                if (task.contains(w.substring(i, i + 2))) return true
+                val g = w.substring(i, i + 2)
+                if (task.contains(g) || seqHit(g, task)) return true
                 i++
             }
         }
         return false
+    }
+
+    /** 有序子序列命中（间隔 ≤ 8 字）：“画一张图” 能命中 “画图” */
+    private fun seqHit(needle: String, hay: String): Boolean {
+        var i = 0
+        var gap = 0
+        for (ch in hay) {
+            if (i < needle.length && ch == needle[i]) {
+                i++
+                gap = 0
+            } else if (i in 1 until needle.length) {
+                gap++
+                if (gap > 8) return false
+            }
+        }
+        return i == needle.length
     }
 }
 
