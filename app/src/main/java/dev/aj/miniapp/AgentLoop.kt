@@ -152,7 +152,9 @@ class AgentLoop(
     private fun runBeforeHook(cmd: String): String? {
         val f = File(hooksDir(), "before.sh")
         if (!f.exists()) return null
-        val (code, out) = Linux.run(ctx, "sh /host/hooks/before.sh " + shellQuote(cmd), 30, envStore.asEnv())
+        // 用绝对路径调，免得 PATH 不对时连 sh 都找不到；钩子自身跑不起来就跳过，不拦命令
+        val (code, out) = Linux.run(ctx, "/bin/sh /host/hooks/before.sh " + shellQuote(cmd), 30, envStore.asEnv())
+        if (code == 127 || out.contains("not found")) return null
         return if (code == 0) null else "[钩子拦截 exit=$code] $out"
     }
 
@@ -161,7 +163,7 @@ class AgentLoop(
         if (!f.exists()) return
         Linux.run(
             ctx,
-            "sh /host/hooks/after.sh ${shellQuote(cmd)} $exit ${shellQuote(output.take(2000))}",
+            "/bin/sh /host/hooks/after.sh ${shellQuote(cmd)} $exit ${shellQuote(output.take(2000))}",
             30,
             envStore.asEnv()
         )
