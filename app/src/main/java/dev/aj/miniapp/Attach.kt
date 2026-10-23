@@ -192,18 +192,37 @@ try:
         from pdfminer.high_level import extract_text
         t = extract_text(p) or ''
     elif ext == 'docx':
-        import docx
-        d = docx.Document(p)
-        t = '\n'.join(x.text for x in d.paragraphs)
+        try:
+            import docx
+            d = docx.Document(p)
+            t = '\n'.join(x.text for x in d.paragraphs)
+        except Exception:
+            # 没装 python-docx 时的兜底：直接读 word/document.xml
+            import zipfile, re
+            with zipfile.ZipFile(p) as z:
+                xml = z.read('word/document.xml').decode('utf-8', 'replace')
+            xml = xml.replace('</w:p>', '\n')
+            t = re.sub(r'<[^>]+>', '', xml)
     elif ext in ('xlsx', 'xlsm'):
-        import openpyxl
-        wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
-        rows = []
-        for ws in wb.worksheets:
-            rows.append('### ' + ws.title)
-            for row in ws.iter_rows(values_only=True):
-                rows.append('\t'.join('' if c is None else str(c) for c in row))
-        t = '\n'.join(rows)
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+            rows = []
+            for ws in wb.worksheets:
+                rows.append('### ' + ws.title)
+                for row in ws.iter_rows(values_only=True):
+                    rows.append('\t'.join('' if c is None else str(c) for c in row))
+            t = '\n'.join(rows)
+        except Exception:
+            import zipfile, re
+            rows = []
+            with zipfile.ZipFile(p) as z:
+                for name in z.namelist():
+                    if not name.startswith('xl/worksheets/sheet'):
+                        continue
+                    xml = z.read(name).decode('utf-8', 'replace').replace('</row>', '\n').replace('</c>', '\t')
+                    rows.append(re.sub(r'<[^>]+>', '', xml))
+            t = '\n'.join(rows)
     else:
         data = open(p, 'rb').read(4000000)
         if b'\x00' in data[:8192]:

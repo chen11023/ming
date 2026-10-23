@@ -173,7 +173,7 @@ object Linux {
                 throw java.io.IOException("解压不完整，缺 ${missing.size} 项: ${missing.joinToString(",")}")
             }
             // apk 需要这两个目录，否则每次 add 都因写缓存失败返回 5
-            for (d in listOf("var/lib/apk", "var/cache/apk", "var/tmp")) File(dest, d).mkdirs()
+            for (d in listOf("var/lib/apk", "var/cache/apk", "var/cache/fontconfig", "var/tmp")) File(dest, d).mkdirs()
             File(dest, MARKER).writeText("tag=$ROOTFS_TAG\nfiles=$count\ncostMs=$cost\n")
             if (oldDir.exists()) oldDir.deleteRecursively()
             if (finalDir.exists() && !finalDir.renameTo(oldDir)) {

@@ -59,15 +59,16 @@ jobs:
               # 逐个装，某个包名不存在时只跳过它，不整体失败
               for pkg in bash python3 curl git nano \
                          py3-pillow py3-matplotlib py3-numpy py3-openpyxl \
-                         py3-docx py3-pdfminer ffmpeg poppler-utils font-noto-cjk; do
+                         py3-pdfminer ffmpeg poppler-utils font-noto-cjk; do
                 echo "=== install $pkg"
                 sudo "$APK" --root /tmp/rootfs --arch aarch64 \
                   --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/main \
                   --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/community \
                   --allow-untrusted --no-cache add "$pkg" 2>&1 | tail -3 || echo "skip $pkg"
               done
-              mkdir -p /tmp/rootfs/var/lib/apk /tmp/rootfs/var/cache/apk /tmp/rootfs/var/tmp
-              chmod 1777 /tmp/rootfs/var/tmp
+              sudo mkdir -p /tmp/rootfs/var/lib/apk /tmp/rootfs/var/cache/apk \
+                             /tmp/rootfs/var/cache/fontconfig /tmp/rootfs/var/tmp
+              sudo chmod 1777 /tmp/rootfs/var/tmp
               echo "--- installed:"; ls /tmp/rootfs/usr/bin | tr '\n' ' ' | head -c 2000
               ls /tmp/rootfs/usr/bin/python3* 2>/dev/null || echo "python3 未装入（不影响启动）"
               tar czf app/src/main/assets/rootfs.tar.gz -C /tmp/rootfs . || true
