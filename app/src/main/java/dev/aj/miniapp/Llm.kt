@@ -16,9 +16,19 @@ class Settings(ctx: Context) {
         get() = sp.getString("baseUrl", DEFAULT_BASE) ?: DEFAULT_BASE
         set(v) = sp.edit().putString("baseUrl", v.trim().trimEnd('/')).apply()
 
+    /** API Key 用 Keystore 加密后落盘（密文前缀 enc1:），磁盘上没有明文 */
     var apiKey: String
-        get() = sp.getString("apiKey", "") ?: ""
-        set(v) = sp.edit().putString("apiKey", v.trim()).apply()
+        get() = Vault.decrypt(sp.getString("apiKey", "") ?: "")
+        set(v) = sp.edit().putString("apiKey", Vault.encrypt(v.trim())).apply()
+
+    /** 启动时调用一次：把历史版本留下的明文 key 转成密文 */
+    fun migratePlaintext() {
+        val raw = sp.getString("apiKey", "") ?: ""
+        if (raw.isNotEmpty() && raw.isNotBlank() && !Vault.isEncrypted(raw)) {
+            val plain = raw
+            sp.edit().putString("apiKey", Vault.encrypt(plain)).apply()
+        }
+    }
 
     var model: String
         get() = sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL

@@ -27,6 +27,27 @@ class AgentLoop(
 
     private val client = LlmClient(settings)
 
+    private val envStore by lazy { EnvStore(ctx) }
+    private val skills by lazy { SkillsStore(ctx) }
+    private val memory by lazy { MemoryStore(ctx) }
+
+    /** 系统提示 = 基础人格 + 记忆 + 命中技能的正文（每轮重算，记忆和技能随时生效） */
+    private fun buildSystem(userText: String): String {
+        val sb = StringBuilder(settings.systemPrompt.trim())
+        val mem = memory.recent()
+        if (mem.isNotBlank()) {
+            sb.append("\n\n## 记忆（之前的对话，供参考）\n").append(mem)
+        }
+        val hit = skills.match(userText)
+        if (hit.isNotEmpty()) {
+            sb.append("\n\n## 技能（命中，照里面的步骤做）\n")
+            for ((n, body) in hit) {
+                sb.append("\n### ").append(n).append('\n').append(body).append('\n')
+            }
+        }
+        return sb.toString()
+    }
+
     /** 会话历史，只保留在内存，不落盘（第一版） */
     private val history = mutableListOf<JSONObject>()
 
@@ -38,13 +59,12 @@ class AgentLoop(
             put("content", userText)
         }
 
-        // 第一轮先插入 system
-        if (history.none { it.optString("role") == "system" }) {
-            history.add(0, JSONObject().apply {
-                put("role", "system")
-                put("content", settings.systemPrompt)
-            })
-        }
+        // 每轮重建 system（记忆/技能会变），旧的丢掉
+        history.removeAll { it.optString("role") == "system" }
+        history.add(0, JSONObject().apply {
+            put("role", "system")
+            put("content", buildSystem(userText))
+        })
 
         var turn = 0
         while (turn < settings.maxTurns) {
@@ -93,7 +113,7 @@ class AgentLoop(
                         val out = if (blocked != null) {
                             blocked
                         } else {
-                            val (code, o) = Linux.run(ctx, cmd)
+                            val (code, o) = Linux.run(ctx, cmd, 120, envStore.asEnv())
                             onEvent(Event.Output(o))
                             runAfterHook(cmd, code, o)
                             if (code == 0) o else "$o\n[exit=$code]"
@@ -111,7 +131,9 @@ class AgentLoop(
             }
 
             // 最终回答
-            onEvent(Event.Answer(reply.text ?: "(空回复)"))
+            val ans = reply.text ?: "(空回复)"
+            onEvent(Event.Answer(ans))
+            runCatching { memory.append(userText, ans) }
             history += JSONObject().apply {
                 put("role", "assistant")
                 put("content", reply.text ?: "")
@@ -130,7 +152,7 @@ class AgentLoop(
     private fun runBeforeHook(cmd: String): String? {
         val f = File(hooksDir(), "before.sh")
         if (!f.exists()) return null
-        val (code, out) = Linux.run(ctx, "sh /host/hooks/before.sh " + shellQuote(cmd), 30)
+        val (code, out) = Linux.run(ctx, "sh /host/hooks/before.sh " + shellQuote(cmd), 30, envStore.asEnv())
         return if (code == 0) null else "[钩子拦截 exit=$code] $out"
     }
 
@@ -140,7 +162,8 @@ class AgentLoop(
         Linux.run(
             ctx,
             "sh /host/hooks/after.sh ${shellQuote(cmd)} $exit ${shellQuote(output.take(2000))}",
-            30
+            30,
+            envStore.asEnv()
         )
     }
 

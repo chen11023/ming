@@ -26,6 +26,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        settings.migratePlaintext()          // 老版本明文 key 转密文
+        MemoryStore(this).ensure()
         agent = AgentLoop(this, settings) { ev -> onAgentEvent(ev) }
         loadUi()
         startBootstrap()
@@ -307,6 +309,167 @@ class MainActivity : Activity() {
         }
         v.addView(diagSend)
         v.addView(diag)
+
+        // ---------------- 环境变量 / 密钥（Keystore 加密）
+        v.addView(label("环境变量 / 密钥（AES 加密存储，注入终端和聊天命令的环境，不落盘"))
+        val envBox = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+        }
+        fun renderEnv() {
+            envBox.removeAllViews()
+            val list = EnvStore(this@MainActivity).all()
+            if (list.isEmpty()) {
+                envBox.addView(TextView(this@MainActivity).apply {
+                    text = "（空）"
+                    textSize = 12f
+                    setTextColor(0xFF9CA3AF.toInt())
+                })
+            }
+            for ((k, value) in list) {
+                val row = android.widget.LinearLayout(this@MainActivity).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                }
+                val masked = if (value.length <= 4) "****"
+                else value.substring(0, 2) + "****" + value.substring(value.length - 2)
+                row.addView(TextView(this@MainActivity).apply {
+                    text = "$k = $masked"
+                    textSize = 13f
+                    setPadding(0, 12, 0, 12)
+                }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(android.widget.Button(this@MainActivity).apply {
+                    text = "删"
+                    textSize = 12f
+                    setOnClickListener {
+                        EnvStore(this@MainActivity).remove(k)
+                        renderEnv()
+                    }
+                })
+                envBox.addView(row)
+            }
+        }
+        v.addView(envBox)
+        val envK = EditText(this).apply { hint = "变量名，如 MY_API_KEY" }
+        val envV = EditText(this).apply { hint = "值" }
+        v.addView(envK)
+        v.addView(envV)
+        v.addView(android.widget.Button(this).apply {
+            text = "添加 / 覆盖"
+            setOnClickListener {
+                val k = envK.text.toString().trim()
+                val value = envV.text.toString()
+                if (!k.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+                    android.widget.Toast.makeText(
+                        this@MainActivity, "变量名只能字母数字下划线，不能数字开头",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    EnvStore(this@MainActivity).put(k, value)
+                    envK.setText("")
+                    envV.setText("")
+                    renderEnv()
+                    android.widget.Toast.makeText(
+                        this@MainActivity, "已加密保存", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        })
+        renderEnv()
+
+        // ---------------- 技能
+        v.addView(label("技能（放 filesDir/skills/<名字>/SKILL.md，命中就拼进系统提示）"))
+        val skillBox = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+        }
+        fun renderSkills() {
+            skillBox.removeAllViews()
+            val store = SkillsStore(this@MainActivity)
+            val names = store.names()
+            if (names.isEmpty()) {
+                skillBox.addView(TextView(this@MainActivity).apply {
+                    text = "（还没加技能）"
+                    textSize = 12f
+                    setTextColor(0xFF9CA3AF.toInt())
+                })
+            }
+            for (n in names) {
+                val row = android.widget.LinearLayout(this@MainActivity).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                }
+                row.addView(TextView(this@MainActivity).apply {
+                    text = n + "  (" + store.read(n).length + " 字)"
+                    textSize = 13f
+                    setPadding(0, 12, 0, 12)
+                }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(android.widget.Button(this@MainActivity).apply {
+                    text = "删"
+                    textSize = 12f
+                    setOnClickListener {
+                        store.delete(n)
+                        renderSkills()
+                    }
+                })
+                skillBox.addView(row)
+            }
+        }
+        v.addView(skillBox)
+        val skillName = EditText(this).apply { hint = "技能名，如 画图" }
+        val skillBody = EditText(this).apply {
+            hint = "SKILL.md 正文（可以带 --- description: ... --- 头）"
+            minLines = 3
+        }
+        v.addView(skillName)
+        v.addView(skillBody)
+        v.addView(android.widget.Button(this).apply {
+            text = "保存技能"
+            setOnClickListener {
+                val n = skillName.text.toString().trim()
+                val body = skillBody.text.toString()
+                if (n.isBlank() || body.isBlank()) {
+                    android.widget.Toast.makeText(
+                        this@MainActivity, "名字和正文都要填", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    SkillsStore(this@MainActivity).save(n, body)
+                    skillName.setText("")
+                    skillBody.setText("")
+                    renderSkills()
+                    android.widget.Toast.makeText(
+                        this@MainActivity, "已保存", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        })
+        renderSkills()
+
+        // ---------------- 记忆
+        v.addView(label("记忆（GLOBAL.md + 今天/昨天，每次对话注入）"))
+        val memView = TextView(this).apply {
+            textSize = 12f
+            setTextIsSelectable(true)
+            setTextColor(0xFF374151.toInt())
+            text = MemoryStore(this@MainActivity).recent(2000).ifBlank { "（还没有记忆）" }
+        }
+        v.addView(memView)
+        val memBar = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+        }
+        memBar.addView(android.widget.Button(this).apply {
+            text = "刷新"
+            setOnClickListener {
+                memView.text = MemoryStore(this@MainActivity).recent(2000).ifBlank { "（还没有记忆）" }
+            }
+        })
+        memBar.addView(android.widget.Button(this).apply {
+            text = "清空今天"
+            setOnClickListener {
+                MemoryStore(this@MainActivity).clearToday()
+                memView.text = MemoryStore(this@MainActivity).recent(2000).ifBlank { "（还没有记忆）" }
+                android.widget.Toast.makeText(
+                    this@MainActivity, "已清空今天的记忆", android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        })
+        v.addView(memBar)
 
         return android.widget.ScrollView(this).apply { addView(v) }
     }

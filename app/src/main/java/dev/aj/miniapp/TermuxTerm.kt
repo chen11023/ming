@@ -82,13 +82,19 @@ class TermuxTerm(private val ctx: Context) {
                 "-w", "/root",
                 "/bin/sh", "-l"
             )
-            val env = arrayOf(
-                "HOME=/root",
-                "TERM=xterm-256color",
-                "LANG=C.UTF-8",
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "PROOT_TMP_DIR=${ctx.cacheDir.absolutePath}",
+            // 环境变量/密钥：从加密表里取，只放进进程环境，不落盘
+            val userEnv = EnvStore(ctx).asEnv()
+            val envList = ArrayList<String>()
+            userEnv.forEach { (k, v) -> envList += "$k=$v" }
+            val defaults = mapOf(
+                "HOME" to "/root",
+                "TERM" to "xterm-256color",
+                "LANG" to "C.UTF-8",
+                "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath,
             )
+            defaults.forEach { (k, v) -> if (!userEnv.containsKey(k)) envList += "$k=$v" }
+            val env = envList.toTypedArray()
 
             val s = TerminalSession(
                 proot.absolutePath,
