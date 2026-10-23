@@ -40,7 +40,7 @@ object Linux {
         onProgress: ((Int, String) -> Unit)? = null
     ): Result<Unit> {
         val dest = rootDir(ctx)
-        val ready = File(dest, ".ready")
+        val ready = File(dest, ".ready2")
         if (ready.exists()) return Result.success(Unit)
 
         return try {
@@ -48,9 +48,10 @@ object Linux {
             val t0 = System.currentTimeMillis()
             var count = 0
 
-            ctx.assets.open("rootfs.tar.gz").use { raw ->
+            val src = openRootfs(ctx) ?: throw java.io.IOException("找不到 rootfs 资源")
+            src.use { raw ->
                 org.apache.commons.compress.archivers.tar.TarArchiveInputStream(
-                    org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw)
+                    maybeGzip(raw)
                 ).use { tar ->
                     var entry = tar.nextTarEntry
                     while (entry != null) {
@@ -59,6 +60,24 @@ object Linux {
                             val f = File(dest, name)
                             if (entry.isDirectory) {
                                 f.mkdirs()
+                            } else if (entry.isSymbolicLink) {
+                                f.parentFile?.mkdirs()
+                                try {
+                                    java.nio.file.Files.deleteIfExists(f.toPath())
+                                    java.nio.file.Files.createSymbolicLink(
+                                        f.toPath(), java.nio.file.Paths.get(entry.linkName)
+                                    )
+                                } catch (_: Exception) {
+                                }
+                                count++
+                            } else if (entry.isLink) {
+                                val tgt = File(dest, entry.linkName.removePrefix("./"))
+                                f.parentFile?.mkdirs()
+                                try {
+                                    if (tgt.exists()) tgt.copyTo(f, overwrite = true)
+                                } catch (_: Exception) {
+                                }
+                                count++
                             } else {
                                 f.parentFile?.mkdirs()
                                 f.outputStream().use { tar.copyTo(it) }
@@ -80,12 +99,36 @@ object Linux {
             File(dest, "root").mkdirs()
 
             val cost = System.currentTimeMillis() - t0
-            File(dest, ".ready").writeText("extracted=$count costMs=$cost\n")
+            File(dest, ".ready2").writeText("extracted=$count costMs=$cost\n")
             onProgress?.invoke(count, "完成")
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+
+    /** 打开 rootfs 资源：AGP 会把 .tar.gz 拆包成 .tar，两种都试 */
+    private fun openRootfs(ctx: Context): java.io.InputStream? {
+        for (n in listOf("rootfs.tar.gz", "rootfs.tar")) {
+            try {
+                return ctx.assets.open(n)
+            } catch (_: java.io.IOException) {
+            }
+        }
+        return null
+    }
+
+    /** 按文件头判断是否 gzip，不是就原样返回 tar */
+    private fun maybeGzip(raw: java.io.InputStream): java.io.InputStream {
+        val pb = java.io.PushbackInputStream(raw, 2)
+        val sig = ByteArray(2)
+        val n = pb.read(sig)
+        if (n == 2 && sig[0] == 0x1f.toByte() && sig[1] == 0x8b.toByte()) {
+            return org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(pb)
+        }
+        if (n > 0) pb.unread(sig, 0, n)
+        return pb
     }
 
     private fun applyMode(f: File, mode: Int) {
