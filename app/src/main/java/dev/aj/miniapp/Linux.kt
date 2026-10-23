@@ -392,18 +392,21 @@ object Linux {
             // 关键库冒烟：numpy/matplotlib 是画图的地基
             val (nc, no) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
             appendLine("numpy    : exit=$nc  ${no.trim().take(160)}")
-            val (nc2, no2) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120, emptyMap(), true)
-            appendLine("numpy/ns : exit=$nc2  ${no2.trim().take(160)}")
-            val (mc, mo) = run(ctx, "python3 -c \"import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180)
-            appendLine("mpl      : exit=$mc  ${mo.trim().take(160)}")
-            val (mc2, mo2) = run(ctx, "python3 -c \"import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180, emptyMap(), true)
-            appendLine("mpl/ns   : exit=$mc2  ${mo2.trim().take(160)}")
+            // 装个 SIGSYS 空处理器：被 seccomp 拦的 syscall 退化成 ENOSYS，而不是杀进程
+            val (nc2, no2) = run(ctx, "python3 -c \"import signal;signal.signal(signal.SIGSYS,lambda *a:None);import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
+            appendLine("numpy/sig: exit=$nc2  ${no2.trim().take(160)}")
+            val (nv, nvo) = run(ctx, "python3 -v -c \"import numpy\" 2>&1 | tail -6", 120)
+            appendLine("py -v    : exit=$nv  ${nvo.trim().replace("\n", " | ").take(320)}")
+            val (mc, mo) = run(ctx, "python3 -c \"import signal;signal.signal(signal.SIGSYS,lambda *a:None);import matplotlib;print('mpl',matplotlib.__version__)\" 2>&1 | tail -2", 180)
+            appendLine("mpl/sig  : exit=$mc  ${mo.trim().take(160)}")
+            val (pc, po) = run(ctx, "echo hi", 60, emptyMap(), true)
+            appendLine("proot/ns : exit=$pc  ${po.trim().replace("\n", " ").take(200)}")
 
             // 探 syscall：哪个被 Android seccomp 拦掉（SIGSYS=31）
             val probe = File(ctx.filesDir, "syscall_probe.py")
             probe.writeText(SYSCALL_PROBE)
-            val (sc, so) = run(ctx, "python3 /host/syscall_probe.py 2>&1 | tail -2", 120)
-            appendLine("syscall  : exit=$sc  ${so.trim().replace("\n", " ").take(220)}")
+            val (sc, so) = run(ctx, "python3 /host/syscall_probe.py 2>&1 | tail -3", 120)
+            appendLine("syscall  : exit=$sc  ${so.trim().replace("\n", " ").take(320)}")
             val (fc, fo) = run(ctx, "mkdir -p /var/lib/apk /var/cache/apk /var/tmp && ls -d /var/lib/apk /var/cache/apk && fc-cache -f >/dev/null 2>&1; echo fc=$?", 120)
             appendLine("apk目录  : exit=$fc  ${fo.trim().replace("\n", " ").take(160)}")
         }
@@ -415,7 +418,7 @@ private const val SYSCALL_PROBE = """
 import os, ctypes
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 libc.syscall.restype = ctypes.c_long
-CANDS = [("membarrier",283),("rseq",293),("io_uring_setup",425),("pidfd_open",434),("clone3",435),("futex_waitv",449),("sched_setaffinity",122)]
+CANDS = [("membarrier",283),("rseq",293),("io_uring_setup",425),("pidfd_open",434),("clone3",435),("futex_waitv",449),("sched_setaffinity",122),("mbind",235),("get_mempolicy",236),("set_mempolicy",237),("migrate_pages",238),("move_pages",239),("perf_event_open",241),("process_vm_readv",270),("process_vm_writev",271),("kcmp",272),("bpf",280),("userfaultfd",282),("setpriority",140)]
 out = []
 for name, nr in CANDS:
     pid = os.fork()
@@ -431,5 +434,6 @@ for name, nr in CANDS:
         out.append(name + ("=SIGSYS" if sig == 31 else "=SIG" + str(sig)))
     else:
         out.append(name + "=ok")
-print(" ".join(out))
+bad = [o for o in out if not o.endswith("=ok")]
+print("blocked:", " ".join(bad) if bad else "none")
 """
