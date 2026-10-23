@@ -48,9 +48,10 @@ object Linux {
             val t0 = System.currentTimeMillis()
             var count = 0
 
-            ctx.assets.open("rootfs.tar.gz").use { raw ->
+            val src = openRootfs(ctx) ?: throw java.io.IOException("找不到 rootfs 资源")
+            src.use { raw ->
                 org.apache.commons.compress.archivers.tar.TarArchiveInputStream(
-                    org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw)
+                    maybeGzip(raw)
                 ).use { tar ->
                     var entry = tar.nextTarEntry
                     while (entry != null) {
@@ -86,6 +87,30 @@ object Linux {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+
+    /** 打开 rootfs 资源：AGP 会把 .tar.gz 拆包成 .tar，两种都试 */
+    private fun openRootfs(ctx: Context): java.io.InputStream? {
+        for (n in listOf("rootfs.tar.gz", "rootfs.tar")) {
+            try {
+                return ctx.assets.open(n)
+            } catch (_: java.io.IOException) {
+            }
+        }
+        return null
+    }
+
+    /** 按文件头判断是否 gzip，不是就原样返回 tar */
+    private fun maybeGzip(raw: java.io.InputStream): java.io.InputStream {
+        val pb = java.io.PushbackInputStream(raw, 2)
+        val sig = ByteArray(2)
+        val n = pb.read(sig)
+        if (n == 2 && sig[0] == 0x1f.toByte() && sig[1] == 0x8b.toByte()) {
+            return org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(pb)
+        }
+        if (n > 0) pb.unread(sig, 0, n)
+        return pb
     }
 
     private fun applyMode(f: File, mode: Int) {
