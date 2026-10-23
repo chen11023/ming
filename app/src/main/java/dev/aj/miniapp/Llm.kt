@@ -1,6 +1,7 @@
 package dev.aj.miniapp
 
 import android.content.Context
+import okhttp3.MediaType.Companion.toMediaType as toOkMediaType
 import org.json.JSONObject
 
 /**
@@ -32,7 +33,7 @@ class Settings(ctx: Context) {
         get() = sp.getInt("maxTurns", 8)
         set(v) = sp.edit().putInt("maxTurns", v.coerceIn(1, 30)).apply()
 
-    var configured: Boolean
+    val configured: Boolean
         get() = apiKey.isNotBlank()
 
     companion object {
@@ -98,7 +99,7 @@ class LlmClient(private val settings: Settings) {
             .url("${settings.baseUrl}/chat/completions")
             .addHeader("Authorization", "Bearer ${settings.apiKey}")
             .addHeader("Content-Type", "application/json")
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toOkMediaType()))
             .build()
 
         return try {
@@ -165,5 +166,3 @@ class LlmClient(private val settings: Settings) {
 private fun String.toRequestBody(ct: okhttp3.MediaType): okhttp3.RequestBody =
     okhttp3.RequestBody.create(ct, this)
 
-private fun String.toMediaType(): okhttp3.MediaType =
-    okhttp3.MediaType.parse("application/json; charset=utf-8")!!
