@@ -201,6 +201,11 @@ class MainActivity : Activity() {
             termStatus.text = if (r.isSuccess) "Alpine · proot · 点屏幕出键盘"
             else "启动失败：${r.exceptionOrNull()?.message}"
             view.requestFocus()
+            view.postDelayed({
+                val imm = getSystemService(INPUT_METHOD_SERVICE)
+                    as? android.view.inputmethod.InputMethodManager
+                imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }, 400)
         } catch (e: Throwable) {
             termStatus.text = "终端创建失败：${e.javaClass.simpleName}: ${e.message}"
         }
