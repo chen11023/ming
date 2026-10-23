@@ -185,9 +185,36 @@ class MainActivity : Activity() {
             setOnClickListener { attachTerminal() }
         }
         termHost = android.widget.FrameLayout(this)
+        val bar = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+        }
+        fun mkBtn(label: String, act: () -> Unit): android.widget.Button =
+            android.widget.Button(this).apply {
+                text = label
+                textSize = 12f
+                setOnClickListener { act() }
+            }
+        val lp = { android.widget.LinearLayout.LayoutParams(0, -2, 1f) }
+        bar.addView(mkBtn("键盘") { showKb() }, lp())
+        bar.addView(mkBtn("粘贴") {
+            if (term?.pasteFromClipboard() != true) termStatus.text = "剪贴板是空的"
+        }, lp())
+        bar.addView(mkBtn("复制") {
+            termStatus.text = if (term?.copySelection() == true) "已复制选中内容"
+            else "先在终端里长按选中文字"
+        }, lp())
         v.addView(termStatus)
+        v.addView(bar)
         v.addView(termHost, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
         return v
+    }
+
+    private fun showKb() {
+        val tv = term?.view ?: return
+        tv.requestFocus()
+        val imm = getSystemService(INPUT_METHOD_SERVICE)
+            as? android.view.inputmethod.InputMethodManager
+        imm?.showSoftInput(tv, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
     }
 
     private fun attachTerminal() {
@@ -198,7 +225,11 @@ class MainActivity : Activity() {
             termHost.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
             val r = t.start()
             term = t
-            termStatus.text = if (r.isSuccess) "Alpine · proot · 点屏幕出键盘"
+            val dx = java.io.File(filesDir, "rootfs").let { d ->
+                "rootfs sh=${java.io.File(d, "bin/sh").exists()} bb=" +
+                    java.io.File(d, "bin/busybox").length() + "B"
+            }
+            termStatus.text = if (r.isSuccess) "Alpine · proot · 点屏幕出键盘\n$dx"
             else "启动失败：${r.exceptionOrNull()?.message}"
             view.requestFocus()
             view.postDelayed({
