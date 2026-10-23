@@ -85,7 +85,21 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build debug APK
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_TAG: ${{ github.sha }}
         run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK with build tag
+        run: |
+          set -e
+          cd app/build/outputs/apk/debug
+          SHORT=$(echo "$GITHUB_SHA" | cut -c1-8)
+          for f in *.apk; do
+            [ "$f" = "aj-mini-r${GITHUB_RUN_NUMBER}-${SHORT}.apk" ] && continue
+            mv "$f" "aj-mini-r${GITHUB_RUN_NUMBER}-${SHORT}.apk"
+          done
+          ls -la
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

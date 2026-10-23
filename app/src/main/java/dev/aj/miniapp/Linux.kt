@@ -26,7 +26,14 @@ object Linux {
     fun prootPath(ctx: Context): File = File(libDir(ctx), "libproot.so")
 
     fun isReady(ctx: Context): Boolean =
-        File(rootDir(ctx), ".ready").exists() && prootPath(ctx).exists()
+        rootfsMarker(ctx).exists() && prootPath(ctx).exists()
+
+    /** 解压完成标记：解压代码写的是 .ready2，老版本写 .ready，两个都认 */
+    fun rootfsMarker(ctx: Context): File {
+        val root = rootDir(ctx)
+        val r2 = File(root, ".ready2")
+        return if (r2.exists()) r2 else File(root, ".ready")
+    }
 
     // ---------------------------------------------------------------- 解压
 
@@ -188,7 +195,6 @@ object Linux {
             pb.environment()["LANG"] = "C.UTF-8"
             // proot 需要可写的临时目录，否则启动就退
             pb.environment()["PROOT_TMP_DIR"] = ctx.cacheDir.absolutePath
-            pb.environment()["PROOT_NO_SECCOMP"] = "1"
 
             val p = pb.start()
             val out = p.inputStream.bufferedReader().readText()
@@ -219,7 +225,6 @@ object Linux {
             pb.environment()["TERM"] = "xterm"
             pb.environment()["LANG"] = "C.UTF-8"
             pb.environment()["PROOT_TMP_DIR"] = ctx.cacheDir.absolutePath
-            pb.environment()["PROOT_NO_SECCOMP"] = "1"
 
             val p = pb.start()
             p.outputStream.close()
@@ -246,6 +251,7 @@ object Linux {
 
     /** 返回几行动诊断信息，给设置页显示 */
     fun diagnose(ctx: Context): String = buildString {
+        appendLine("版本     : ${BuildConfig.VERSION_NAME}  (${BuildConfig.BUILD_TAG})")
         appendLine("dataDir  : ${ctx.filesDir}")
         appendLine("nativeLib: ${libDir(ctx)}")
 
@@ -253,14 +259,16 @@ object Linux {
         appendLine("proot    : ${if (proot.exists()) "${proot.length()} B" else "❌ 缺失"}")
 
         val root = rootDir(ctx)
-        val ready = File(root, ".ready")
-        appendLine("rootfs   : ${if (ready.exists()) "✅ 已解压" else "❌ 未解压"}")
+        val ready = rootfsMarker(ctx)
+        // busybox 真在就算解压成功（绝对符号链接在 App 侧 exists() 会是 false）
+        val rootfsOk = ready.exists() || File(root, "bin/busybox").exists()
+        appendLine("rootfs   : ${if (rootfsOk) "✅ 已解压" else "❌ 未解压"}")
 
         if (ready.exists()) {
             appendLine("标记文件 : ${ready.readText().trim()}")
         }
 
-        if (proot.exists() && ready.exists()) {
+        if (proot.exists() && rootfsOk) {
             val (code, out) = run(ctx, "cat /etc/alpine-release 2>/dev/null; uname -m", 30)
             appendLine("自检     : exit=$code")
             appendLine(out.take(500))

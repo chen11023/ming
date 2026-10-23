@@ -13,10 +13,14 @@ android {
         // 必须是 28：Android 10+ 对 targetSdk>=29 的应用禁止在数据目录 execve，
         // proot 起 rootfs 里的 /bin/sh 会 EACCES 直接 255（Termux 自己就是 28）
         targetSdk = 28
-        versionCode = 1
-        versionName = "0.1"
+        // 版本标识：每次 CI 构建自带 run number + commit，装完能分清是哪一版
+        versionCode = (System.getenv("BUILD_NUMBER") ?: "1").toInt()
+        versionName = "0.2." + (System.getenv("BUILD_NUMBER") ?: "0")
+        buildConfigField("String", "BUILD_TAG", "\"${System.getenv("BUILD_TAG") ?: "local"}\"")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
+
+    buildFeatures { buildConfig = true }
 
     buildTypes {
         debug { isMinifyEnabled = false }
