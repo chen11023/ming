@@ -23,6 +23,32 @@ class TermuxTerm(private val ctx: Context) {
     var session: TerminalSession? = null
         private set
 
+    fun pasteFromClipboard(): Boolean {
+        val s = session ?: return false
+        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager ?: return false
+        val txt = cm.primaryClip?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)?.coerceToText(ctx)?.toString()
+        if (txt.isNullOrEmpty()) return false
+        send(txt)
+        return true
+    }
+
+    fun copySelection(): Boolean {
+        val v = view ?: return false
+        val sel = try {
+            v.selectedText
+        } catch (_: Exception) {
+            null
+        }
+        if (sel.isNullOrEmpty()) return false
+        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager ?: return false
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("terminal", sel))
+        return true
+    }
+
+
     fun createView(): TerminalView {
         val v = TerminalView(ctx, null).apply {
             setTerminalViewClient(viewClient)
