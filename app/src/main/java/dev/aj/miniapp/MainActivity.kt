@@ -225,7 +225,7 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != PICK || resultCode != RESULT_OK || data == null) return
         val uris = mutableListOf<android.net.Uri>()
-        data.clipData?.let { c -> for (i in 0 until c.count) c.getItemAt(i)?.uri?.let { uris += it } }
+        data.clipData?.let { c -> for (i in 0 until c.itemCount) c.getItemAt(i)?.uri?.let { uris += it } }
         if (uris.isEmpty()) data.data?.let { uris += it }
         if (uris.isEmpty()) return
         thread {
