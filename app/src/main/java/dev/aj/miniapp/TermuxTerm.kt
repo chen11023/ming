@@ -27,6 +27,8 @@ class TermuxTerm(private val ctx: Context) {
         val v = TerminalView(ctx, null).apply {
             setTerminalViewClient(viewClient)
             setTextSize(28)
+            isFocusable = true
+            isFocusableInTouchMode = true
         }
         view = v
         return v
