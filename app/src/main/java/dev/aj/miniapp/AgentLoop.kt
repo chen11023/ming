@@ -2,6 +2,7 @@ package dev.aj.miniapp
 
 import android.content.Context
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 
 /**
@@ -14,6 +15,7 @@ import java.io.File
 class AgentLoop(
     private val ctx: Context,
     private val settings: Settings,
+    private val envStore: EnvStore,
     private val onEvent: (Event) -> Unit
 ) {
 
@@ -23,11 +25,30 @@ class AgentLoop(
         class Output(val text: String) : Event()
         class Answer(val text: String) : Event()
         class Error(val msg: String) : Event()
+        /** 流式增量，界面拿它实时刷新 */
+        class Delta(val text: String) : Event()
     }
 
     private val client = LlmClient(settings)
+    private val mcp by lazy { McpManager(ctx) }
 
-    private val envStore by lazy { EnvStore(ctx) }
+    @Volatile
+    private var stopFlag = false
+
+    /** MCP 工具清单缓存，改配置后清掉重拉 */
+    private var mcpTools: org.json.JSONArray? = null
+
+    fun refreshMcp() {
+        mcpTools = null
+        mcp.stopAll()
+    }
+
+    /** 停：界面按停止时调，掐请求 + 让循环下一轮退出 */
+    fun stop() {
+        stopFlag = true
+        client.cancel()
+    }
+
     private val skills by lazy { SkillsStore(ctx) }
     private val memory by lazy { MemoryStore(ctx) }
 
@@ -81,11 +102,37 @@ class AgentLoop(
     }
 
     fun send(userText: String, parts: List<JSONObject> = emptyList()) {
+        stopFlag = false
+        client.resetCancel()
         try {
             turn(userText, parts)
         } finally {
             save()
         }
+    }
+
+    /** 上下文压缩：太长就砍掉中段，保留开头 system 和最后十几条，避免几十轮后 400 */
+    private fun compress() {
+        val others = history.filter { it.optString("role") != "system" }
+        val chars = others.sumOf { it.toString().length }
+        if (others.size <= 30 && chars <= 80000) return
+        var cut = others.size - 16
+        if (cut <= 0) return
+        // 从用户消息下刀，别把 assistant(tool_calls) 和 tool 回执切开
+        while (cut < others.size - 1 && others[cut].optString("role") != "user") cut++
+        val sys = history.firstOrNull { it.optString("role") == "system" }
+        val tail = others.subList(cut, others.size).toList()
+        history.clear()
+        sys?.let { history += it }
+        history += JSONObject().apply {
+            put("role", "user")
+            put("content", "[前 $cut 条历史已省略]")
+        }
+        history += JSONObject().apply {
+            put("role", "assistant")
+            put("content", "明白，接着说。")
+        }
+        history.addAll(tail)
     }
 
     private fun turn(userText: String, parts: List<JSONObject>) {
@@ -113,8 +160,16 @@ class AgentLoop(
 
         var turn = 0
         while (turn < settings.maxTurns) {
+            if (stopFlag) {
+                onEvent(Event.Error("已停止"))
+                return
+            }
             turn++
-            val reply = client.chat(history)
+            compress()
+            val extra = mcpTools ?: runCatching { mcp.toolDefs() }
+                .getOrDefault(org.json.JSONArray())
+                .also { mcpTools = it }
+            val reply = client.chatStream(history, extra) { d -> onEvent(Event.Delta(d)) }
 
             if (reply.error != null) {
                 onEvent(Event.Error(reply.error!!))
@@ -146,24 +201,35 @@ class AgentLoop(
 
                 // 逐条执行
                 for (tc in reply.toolCalls) {
+                    if (stopFlag) {
+                        onEvent(Event.Error("已停止"))
+                        return
+                    }
                     val cmd = runCatching {
                         JSONObject(tc.arguments).optString("command", "")
                     }.getOrDefault("")
 
-                    val result = if (cmd.isBlank()) {
-                        "[参数错误] 没有 command"
-                    } else {
-                        onEvent(Event.Command(cmd))
-                        val blocked = runBeforeHook(cmd)
-                        val out = if (blocked != null) {
-                            blocked
-                        } else {
-                            val (code, o) = Linux.run(ctx, cmd, 120, envStore.asEnv())
-                            onEvent(Event.Output(o))
-                            runAfterHook(cmd, code, o)
-                            if (code == 0) o else "$o\n[exit=$code]"
+                    val result = when {
+                        tc.name.startsWith("mcp__") -> {
+                            onEvent(Event.Command("${tc.name} ${tc.arguments.take(300)}"))
+                            val r = mcp.call(tc.name, tc.arguments)
+                            onEvent(Event.Output(r))
+                            r
                         }
-                        out
+                        cmd.isBlank() -> "[参数错误] 没有 command"
+                        else -> {
+                            onEvent(Event.Command(cmd))
+                            val blocked = runBeforeHook(cmd)
+                            val out = if (blocked != null) {
+                                blocked
+                            } else {
+                                val (code, o) = Linux.run(ctx, cmd, 120, envStore.asEnv())
+                                onEvent(Event.Output(o))
+                                runAfterHook(cmd, code, o)
+                                if (code == 0) o else "$o\n[exit=$code]"
+                            }
+                            out
+                        }
                     }
 
                     history += JSONObject().apply {

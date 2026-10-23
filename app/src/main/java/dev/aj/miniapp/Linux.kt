@@ -336,6 +336,22 @@ object Linux {
     /**
      * 流式执行：边跑边把输出喂给回调（给终端页用）。
      */
+    /** 起一个常驻进程（MCP 服务之类），stdout/stderr 分开，由调用方自己读 */
+    fun startInteractive(ctx: Context, script: String): Process {
+        val pb = ProcessBuilder(prootCommand(ctx, script))
+        pb.redirectErrorStream(false)
+        // 跟 run() 用同一套环境，否则 proot 里拿不到 PATH，python3 直接找不到
+        val defEnv = mapOf(
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME" to "/root",
+            "TERM" to "xterm",
+            "LANG" to "C.UTF-8",
+            "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath
+        )
+        defEnv.forEach { (k, v) -> pb.environment()[k] = v }
+        return pb.start()
+    }
+
     fun runStreaming(
         ctx: Context,
         script: String,

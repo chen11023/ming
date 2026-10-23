@@ -26,6 +26,12 @@ class MainActivity : Activity() {
     private val PICK = 1001
     private lateinit var chatInput: EditText
     private lateinit var chatSend: android.widget.Button
+    private lateinit var chatStop: android.widget.Button
+    private lateinit var modelLabel: TextView
+    private lateinit var envStore: EnvStore
+    private lateinit var mcp: McpManager
+    private val transcript = StringBuilder()
+    private val streamBuf = StringBuilder()
 
     private lateinit var diag: TextView
     private lateinit var diagSend: android.widget.Button
@@ -37,9 +43,19 @@ class MainActivity : Activity() {
         settings = Settings(this)
         settings.migratePlaintext()          // 老版本明文 key 转密文
         MemoryStore(this).ensure()
-        agent = AgentLoop(this, settings) { ev -> onAgentEvent(ev) }
+        envStore = EnvStore(this)
+        mcp = McpManager(this)
+        agent = AgentLoop(this, settings, envStore) { ev -> onAgentEvent(ev) }
         loadUi()
         restoreSession()
+        if (transcript.isEmpty()) {
+            appendChat(
+                "提示",
+                if (!settings.configured) "还没填 API Key，去「设置」页填一下。默认接的是 DeepSeek。"
+                else "在下面的输入框说话。需要跑命令时我会自己执行。",
+                if (!settings.configured) 0xFFB45309.toInt() else 0xFF6B7280.toInt()
+            )
+        }
         thread { runCatching { Linux.cleanup(this@MainActivity) } }
         startBootstrap()
     }
@@ -93,6 +109,41 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------ 聊天页
 
+    /** 聊天页顶部那条：显示当前模型，点一下换 */
+    private fun modelBar(): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(10, 6, 10, 0)
+        }
+        modelLabel = TextView(this).apply {
+            text = "模型：${settings.activeName} · ${settings.model}"
+            textSize = 12f
+            setTextColor(0xFF6B7280.toInt())
+            setPadding(4, 10, 4, 10)
+            setOnClickListener { pickModel() }
+        }
+        row.addView(modelLabel, LinearLayout.LayoutParams(0, -2, 1f))
+        return row
+    }
+
+    private fun pickModel() {
+        val ps = settings.profiles()
+        val names = ps.map { "${it.name}（${it.model}）" }.toMutableList()
+        names.add("新增配置 → 去「设置」页")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("选择模型")
+            .setItems(names.toTypedArray()) { _, i ->
+                if (i < ps.size) {
+                    settings.activeIndex = i
+                    modelLabel.text = "模型：${ps[i].name} · ${ps[i].model}"
+                    appendChat("系统", "已切到配置「${ps[i].name}」", 0xFF6B7280.toInt())
+                } else {
+                    android.widget.Toast.makeText(this, "去底部「设置」→ 模型配置", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            .show()
+    }
+
     private fun buildChatPage(): android.view.View {
         val v = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -114,6 +165,7 @@ class MainActivity : Activity() {
         }
         scroll.addView(chatCol)
         chatScroll = scroll
+        v.addView(modelBar(), android.widget.LinearLayout.LayoutParams(-1, -2))
         v.addView(scroll, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
 
         val row = android.widget.LinearLayout(this).apply {
@@ -143,16 +195,20 @@ class MainActivity : Activity() {
             text = "📎"
             setOnClickListener { pickFiles() }
         }
+        chatStop = android.widget.Button(this).apply {
+            text = "停"
+            setVisibility(android.view.View.GONE)
+            setTextColor(0xFFDC2626.toInt())
+            setOnClickListener {
+                agent.stop()
+                appendChat("系统", "已发送停止指令", 0xFF6B7280.toInt())
+            }
+        }
         row.addView(attachBtn)
         row.addView(chatInput, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(chatStop)
         row.addView(chatSend)
         v.addView(row)
-
-        if (!settings.configured) {
-            appendChat("提示", "还没填 API Key，去「设置」页填一下。默认接的是 DeepSeek。", 0xFFB45309.toInt())
-        } else {
-            appendChat("提示", "在下面的输入框说话。需要跑命令时我会自己执行。", 0xFF6B7280.toInt())
-        }
         return v
     }
 
@@ -170,6 +226,7 @@ class MainActivity : Activity() {
         pending.clear()
         attachBtn.text = "📎"
         chatSend.isEnabled = false
+        chatStop.visibility = android.view.View.VISIBLE
         thread {
             val parts = try {
                 files.flatMap { f ->
@@ -188,13 +245,21 @@ class MainActivity : Activity() {
                     appendChat("错误", "${e.javaClass.simpleName}: ${e.message}", 0xFFDC2626.toInt())
                 }
             }
-            runOnUiThread { chatSend.isEnabled = true }
+            runOnUiThread {
+                chatSend.isEnabled = true
+                chatStop.visibility = android.view.View.GONE
+            }
         }
     }
 
     private fun onAgentEvent(ev: AgentLoop.Event) {
         runOnUiThread {
             when (ev) {
+                is AgentLoop.Event.Delta -> {
+                    streamBuf.append(ev.text)
+                    if (streamBuf.length > 40000) streamBuf.delete(0, streamBuf.length - 20000)
+                    scheduleStreamRender()
+                }
                 is AgentLoop.Event.Thinking ->
                     appendChat("思考", ev.text, 0xFF6B7280.toInt())
                 is AgentLoop.Event.Command ->
@@ -253,22 +318,27 @@ class MainActivity : Activity() {
     private fun sessionFile(name: String) = java.io.File(filesDir, "sessions/$name").apply { parentFile?.mkdirs() }
 
     private fun saveTranscript() {
-        val t = chatView.text?.toString().orEmpty()
+        val t = transcript.toString()
         if (t.length > 300000) return
         runCatching { sessionFile("chat.txt").writeText(t) }
     }
 
     private fun restoreSession() {
         val f = sessionFile("chat.txt")
-        if (f.exists()) runCatching { chatView.text = f.readText() }
+        if (f.exists()) runCatching {
+            transcript.append(f.readText())
+            renderAll()
+        }
         val n = runCatching { agent.load() }.getOrDefault(0)
         if (n > 0) {
-            appendChat("提示", "已恢复上次会话（$n 条消息）。长按「发送」可开新会话。", 0xFF6B7280.toInt())
+            appendChat("提示", "已恢复上次会话（$n 条消息）。长按「发送」可开新会话。", 0xFF6B7280.toInt(), false)
         }
     }
 
     private fun newSession() {
         runCatching { agent.reset() }
+        transcript.setLength(0)
+        streamBuf.setLength(0)
         chatView.text = ""
         outBox.removeAllViews()
         pending.clear()
@@ -280,11 +350,37 @@ class MainActivity : Activity() {
         appendChat("提示", "新会话开始。", 0xFF6B7280.toInt())
     }
 
-    private fun appendChat(tag: String, body: String, color: Int) {
-        val cur = chatView.text?.toString().orEmpty()
-        chatView.text = if (cur.isEmpty()) "[$tag] $body" else "$cur\n\n[$tag] $body"
-        chatView.setTextColor(Color.BLACK)
-        saveTranscript()
+    private fun appendChat(tag: String, body: String, color: Int, save: Boolean = true) {
+        streamBuf.setLength(0)
+        if (transcript.isNotEmpty()) transcript.append("\n\n")
+        transcript.append("[$tag] ").append(body)
+        renderAll()
+        if (save) saveTranscript()
+        chatScroll.post { chatScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+    }
+
+    /** 流式期间别每个 token 都整段重绘，攒到 120ms 一次 */
+    private var streamPending = false
+
+    private fun scheduleStreamRender() {
+        if (streamPending) return
+        streamPending = true
+        chatView.postDelayed({
+            streamPending = false
+            renderAll()
+        }, 120)
+    }
+
+    /** 整段重绘：Markdown 渲染 + 流式中的临时尾巴 */
+    private fun renderAll() {
+        val sb = StringBuilder(transcript)
+        if (streamBuf.isNotEmpty()) {
+            if (sb.isNotEmpty()) sb.append("\n\n")
+            sb.append("[AJ] ").append(streamBuf)
+        }
+        val text = sb.toString()
+        val shown = if (text.length > 400000) text.takeLast(400000) else text
+        chatView.text = Markdown.render(shown)
         chatScroll.post { chatScroll.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 
@@ -405,6 +501,159 @@ class MainActivity : Activity() {
                 android.widget.Toast.makeText(this@MainActivity, "已保存", android.widget.Toast.LENGTH_SHORT).show()
             }
         })
+
+        // ---------------- 多套模型配置（聊天页顶部切换）
+        v.addView(label("模型配置列表（可存多套 key/地址，聊天页顶部点一下切换）"))
+        val profBox = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+        }
+        fun renderProfiles() {
+            profBox.removeAllViews()
+            val list = settings.profiles()
+            if (list.isEmpty()) {
+                profBox.addView(TextView(this).apply {
+                    text = "（还没有，下面加一个）"
+                    textSize = 12f
+                    setTextColor(0xFF9CA3AF.toInt())
+                })
+            }
+            for ((i, p) in list.withIndex()) {
+                val row = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                }
+                val active = i == settings.activeIndex
+                row.addView(TextView(this).apply {
+                    text = "${if (active) "● " else "○ "}${p.name}  ${p.model}"
+                    textSize = 13f
+                    setPadding(0, 12, 0, 12)
+                    setOnClickListener {
+                        settings.activeIndex = i
+                        renderProfiles()
+                        modelLabel.text = "模型：${p.name} · ${p.model}"
+                    }
+                }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(android.widget.Button(this).apply {
+                    text = "删"
+                    textSize = 12f
+                    setOnClickListener {
+                        val now = settings.profiles()
+                        if (i in now.indices) {
+                            now.removeAt(i)
+                            settings.saveProfiles(now)
+                            if (settings.activeIndex >= now.size) settings.activeIndex = 0
+                            renderProfiles()
+                        }
+                    }
+                })
+                profBox.addView(row)
+            }
+        }
+        renderProfiles()
+        v.addView(profBox)
+        val pn = EditText(this).apply { hint = "配置名，如 智谱" }
+        val pb = EditText(this).apply { hint = "接口地址 https://.../v1" }
+        val pm = EditText(this).apply { hint = "模型名 gpt-4o-mini" }
+        val pk = EditText(this).apply { hint = "API Key" }
+        v.addView(pn)
+        v.addView(pb)
+        v.addView(pm)
+        v.addView(pk)
+        v.addView(android.widget.Button(this).apply {
+            text = "新增并启用"
+            setOnClickListener {
+                val name = pn.text.toString().trim().ifBlank { "配置${settings.profiles().size + 1}" }
+                val url = pb.text.toString().trim().ifBlank { settings.baseUrl }
+                val md = pm.text.toString().trim().ifBlank { settings.model }
+                val k = pk.text.toString().trim()
+                val now = settings.profiles()
+                now.add(Settings.Profile(name, url.trimEnd('/'), md, Vault.encrypt(k)))
+                settings.saveProfiles(now)
+                settings.activeIndex = now.size - 1
+                renderProfiles()
+                modelLabel.text = "模型：$name · $md"
+                pn.setText(""); pb.setText(""); pm.setText(""); pk.setText("")
+                android.widget.Toast.makeText(
+                    this@MainActivity, "已新增并启用「$name」", android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        })
+
+        // ---------------- MCP 服务
+        v.addView(label("MCP 服务（stdio 命令行，例：python3 /host/mcp/demo.py）"))
+        val mcpBox = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+        }
+        fun renderMcp() {
+            mcpBox.removeAllViews()
+            val list = mcp.servers()
+            if (list.isEmpty()) {
+                mcpBox.addView(TextView(this).apply {
+                    text = "（还没有 MCP 服务）"
+                    textSize = 12f
+                    setTextColor(0xFF9CA3AF.toInt())
+                })
+            }
+            for (s in list) {
+                val row = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                }
+                row.addView(TextView(this).apply {
+                    text = "${s.name}  ${
+                        if (s.enabled) "" else "[已停] "
+                    }${s.command}"
+                    textSize = 12f
+                    setPadding(0, 12, 0, 12)
+                }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(android.widget.Button(this).apply {
+                    text = if (s.enabled) "停" else "启"
+                    textSize = 12f
+                    setOnClickListener {
+                        mcp.setEnabled(s.name, !s.enabled)
+                        agent.refreshMcp()
+                        renderMcp()
+                    }
+                })
+                row.addView(android.widget.Button(this).apply {
+                    text = "删"
+                    textSize = 12f
+                    setOnClickListener {
+                        mcp.remove(s.name)
+                        agent.refreshMcp()
+                        renderMcp()
+                    }
+                })
+                mcpBox.addView(row)
+            }
+        }
+        renderMcp()
+        v.addView(mcpBox)
+        val mn = EditText(this).apply { hint = "名字，如 files" }
+        val mc = EditText(this).apply { hint = "启动命令，如 python3 /host/mcp/demo.py" }
+        v.addView(mn)
+        v.addView(mc)
+        val mcpBtn = android.widget.Button(this).apply {
+            text = "添加 MCP 服务并测连通"
+            setOnClickListener {
+                val name = mn.text.toString().trim()
+                val cmd = mc.text.toString().trim()
+                if (name.isBlank() || cmd.isBlank()) return@setOnClickListener
+                mcp.add(McpManager.Server(name, cmd, true))
+                agent.refreshMcp()
+                renderMcp()
+                text = "连接中…"
+                thread {
+                    val r = McpManager(this@MainActivity).probe(name)
+                    runOnUiThread {
+                        text = "添加 MCP 服务并测连通"
+                        android.widget.Toast.makeText(
+                            this@MainActivity, r, android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        mn.setText(""); mc.setText("")
+                    }
+                }
+            }
+        }
+        v.addView(mcpBtn)
 
         diag = TextView(this).apply {
             text = "点下面按钮检查 Linux 环境"
