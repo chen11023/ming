@@ -103,6 +103,11 @@ object Linux {
             onProgress?.invoke(count, "完成")
             Result.success(Unit)
         } catch (e: Exception) {
+            try {
+                File(dest.parentFile, ".extract_err")
+                    .writeText(e.toString() + "\n" + e.stackTrace.take(6).joinToString("\n"))
+            } catch (_: Exception) {
+            }
             Result.failure(e)
         }
     }
@@ -253,8 +258,13 @@ object Linux {
         appendLine("proot    : ${if (proot.exists()) "${proot.length()} B" else "❌ 缺失"}")
 
         val root = rootDir(ctx)
-        val ready = File(root, ".ready")
+        val ready = File(root, ".ready2")
         appendLine("rootfs   : ${if (ready.exists()) "✅ 已解压" else "❌ 未解压"}")
+        val sh = File(root, "bin/sh")
+        val bb = File(root, "bin/busybox")
+        appendLine("bin/sh   : ${if (sh.exists()) "✅" else "❌"}  busybox=${bb.length()}B")
+        val err = File(root, "..", ".extract_err")
+        if (err.exists()) appendLine("解压错误 : ${err.readText().take(300)}")
 
         if (ready.exists()) {
             appendLine("标记文件 : ${ready.readText().trim()}")
