@@ -18,7 +18,7 @@ object Linux {
     private const val TAG = "Linux"
 
     /** 只有改这个值才会强制重新解压（改 rootfs 内容时同步改它） */
-    private const val ROOTFS_TAG = "alpine3.20.3-p1"
+    private const val ROOTFS_TAG = "alpine3.20.3-p2"
 
     /** 解压完成标记（内容含 ROOTFS_TAG） */
     private const val MARKER = ".ready2"
@@ -26,7 +26,7 @@ object Linux {
     /** 解压完整性校验用的关键文件（都不是符号链接，能直接判存在与非空） */
     private val KEY_PATHS = listOf(
         "bin/busybox",
-        "usr/bin/bash",
+        "bin/bash",
         "usr/bin/curl",
         "usr/bin/git",
         "usr/bin/python3.12",
