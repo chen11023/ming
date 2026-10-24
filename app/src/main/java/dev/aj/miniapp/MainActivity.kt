@@ -68,6 +68,17 @@ class MainActivity : Activity() {
                 KeepAlive.start(this)
                 thread { runCatching { if (!WebAj.running(this)) WebAj.start(this) } }
             }
+            // 路由大脑每天自己探一次（探过了就不动，24 小时内不重复），子 AJ 才知道哪个模型已经坏了
+            thread {
+                runCatching {
+                    val r = RouteBrain.probeAll(settings)
+                    // 真探过了才重启子 AJ，让它丢掉旧缓存、换上新排好的链
+                    if (!r.startsWith("今天已经探过") && settings.webOn) {
+                        runCatching { WebAj.stop(this@MainActivity) }
+                        runCatching { WebAj.start(this@MainActivity) }
+                    }
+                }
+            }
         }
         agent = AgentLoop(this, settings, envStore) { ev -> onAgentEvent(ev) }
         agent.onConfirm = { what -> askConfirm(what) }
@@ -1492,7 +1503,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 android.app.AlertDialog.Builder(this@MainActivity)
                     .setTitle("模型健康度（来自真实调用结果）")
-                    .setMessage(RouteBrain.summary(settings))
+                    .setMessage(RouteBrain.probeInfo(settings) + RouteBrain.summary(settings))
                     .setPositiveButton("知道了", null)
                     .setNeutralButton("清空记录") { _, _ ->
                         settings.setRouteHealthRaw("{}")
@@ -1501,6 +1512,22 @@ class MainActivity : Activity() {
                         ).show()
                     }
                     .show()
+            }
+        })
+        v.addView(android.widget.Button(this@MainActivity).apply {
+            text = "路由大脑：测一测（每天自动一次）"
+            setOnClickListener {
+                android.widget.Toast.makeText(this@MainActivity, "正在逐个探测模型…", android.widget.Toast.LENGTH_SHORT).show()
+                Thread {
+                    val r = RouteBrain.probeAll(settings, force = true)
+                    runOnUiThread {
+                        android.app.AlertDialog.Builder(this@MainActivity)
+                            .setTitle("探测结果")
+                            .setMessage(r)
+                            .setPositiveButton("知道了", null)
+                            .show()
+                    }
+                }.start()
             }
         })
         v.addView(android.widget.Button(this@MainActivity).apply {

@@ -1,6 +1,8 @@
 package dev.aj.miniapp
 
 import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * 路由大脑（App 本体版），和网页版的 modelbrain.py 是同一套机制：
@@ -117,6 +119,80 @@ object RouteBrain {
     }
 
     /** 真实调用成功 → 清零复活 */
+    /** 真探一个模型：发 max_tokens=1 的最短请求。能通返回 null，失败返回错误摘要 */
+    private fun probeOne(e: Entry): String? = runCatching {
+        val url = URL(e.base.trimEnd('/') + "/chat/completions")
+        val c = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 12000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Authorization", "Bearer ${e.key}")
+        }
+        val body = JSONObject()
+            .put("model", e.name)
+            .put("max_tokens", 1)
+            .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", "hi")))
+            .toString()
+        c.outputStream.use { it.write(body.toByteArray()) }
+        val code = c.responseCode
+        val txt = runCatching {
+            (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { r -> r.readText() }
+        }.getOrNull() ?: ""
+        if (code in 200..299) null else "HTTP $code ${tidy(txt)}"
+    }.getOrElse { it.message ?: "请求失败" }
+
+    /** 上次探测时间，给健康度页显示 */
+    fun probeInfo(st: Settings): String {
+        val at = runCatching { load(st).optJSONObject("__probe")?.optLong("at", 0L) ?: 0L }.getOrDefault(0L)
+        if (at <= 0L) return "上次探测：还没探过\n\n"
+        val f = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+        return "上次探测：" + f.format(java.util.Date(at)) + "\n\n"
+    }
+
+    /** 每天最多自动探一次：把每个模型的真实可用性写进健康度 */
+    fun probeAll(st: Settings, force: Boolean = false): String {
+        val h = load(st)
+        val last = h.optJSONObject("__probe")?.optLong("at", 0L) ?: 0L
+        val now = System.currentTimeMillis()
+        val day = 24 * 3600_000L
+        if (!force && now - last < day) {
+            val left = (day - (now - last)) / 3600_000L
+            return "今天已经探过了（${left.coerceAtLeast(1)} 小时后自动再探）"
+        }
+        val es = entries(st)
+        if (es.isEmpty()) return "还没有配模型"
+        var ok = 0
+        var bad = 0
+        val sb = StringBuilder()
+        for (e in es) {
+            if (isMedia(e.name)) continue   // 出图模型不走 chat 接口，别拿它当坏模型
+            if (e.key.isBlank()) continue   // 没配 key 的服务商不探
+            val err = probeOne(e)
+            val r = rec(h, e)
+            if (err == null) {
+                ok++
+                r.put("status", "ok"); r.put("fails", 0); r.put("coolUntil", 0L); r.put("okAt", now)
+                r.remove("lastErr")
+                sb.append("✅ ").append(e.name).append('\n')
+            } else {
+                bad++
+                val cls = classify(err)
+                r.put("status", cls)
+                r.put("fails", r.optInt("fails", 0) + 1)
+                r.put("coolUntil", now + if (cls == "dead") DEAD_COOLDOWN else COOLDOWN[0])
+                r.put("lastErr", err.take(200))
+                sb.append("❌ ").append(e.name).append(" — ").append(err.take(60)).append('\n')
+            }
+            r.put("tier", e.tier); r.put("name", e.name); r.put("role", e.role)
+            h.put(hkey(e), r)
+        }
+        h.put("__probe", JSONObject().put("at", now))
+        save(st, h)
+        return "探测完成，能用 $ok 个，不能用 $bad 个\n\n$sb"
+    }
+
     fun markOk(st: Settings, name: String, base: String) {
         runCatching {
             val list = entries(st).filter { it.name == name && (base.isBlank() || it.base == base) }

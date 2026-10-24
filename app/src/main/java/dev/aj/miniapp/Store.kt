@@ -1,6 +1,7 @@
 package dev.aj.miniapp
 
 import android.content.Context
+import android.os.Environment
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -129,15 +130,23 @@ class EnvStore(ctx: Context) {
  */
 class SkillsStore(private val ctx: Context) {
 
-    fun dir(): File = File(ctx.filesDir, "skills").apply { mkdirs() }
+    /** 技能放手机存储，谁装都是这个目录，自己往里丢就行 */
+    fun dir(): File = File(Environment.getExternalStorageDirectory(), "Minis/skills").apply { mkdirs() }
 
-    fun names(): List<String> = dir().listFiles()
-        ?.filter { it.isDirectory && File(it, "SKILL.md").exists() }
-        ?.map { it.name }?.sorted().orEmpty()
+    /** 外部目录优先，读不到再退 App 私有目录（内置示例技能） */
+    private fun dirs(): List<File> = listOf(dir(), File(ctx.filesDir, "skills"))
+        .filter { it.isDirectory }
+
+    fun names(): List<String> = dirs().flatMap { d ->
+        d.listFiles()?.filter { it.isDirectory && File(it, "SKILL.md").exists() }?.map { it.name } ?: emptyList()
+    }.distinct().sorted()
 
     fun read(name: String): String {
-        val f = File(File(dir(), name), "SKILL.md")
-        return if (f.exists()) f.readText() else ""
+        dirs().forEach { d ->
+            val f = File(File(d, name), "SKILL.md")
+            if (f.exists()) return f.readText()
+        }
+        return ""
     }
 
     fun save(name: String, body: String) {

@@ -71,10 +71,9 @@ object WebAj {
         )
         f.appendText("AJ_MODEL=$model\n")
         // 降级链直接用 App 里这个服务商已配好的模型列表，用户加一个模型就自动带上，不用手改任何文件
+        // 子 AJ 全自动：按路由大脑排（探过/用过的坏模型会被沉到最后），不吃手选
         val chain = runCatching {
-            st.providers().firstOrNull { it.baseUrl == base }?.models
-                ?.filter { it.isNotBlank() }
-                ?.joinToString(",") ?: ""
+            RouteBrain.chain(st, "", 6).map { it.name }.filter { it.isNotBlank() }.joinToString(",")
         }.getOrDefault("")
         f.appendText("AJ_MODELS=" + (chain.ifBlank { model }) + "\n")
         f.appendText("AJ_KEY=$key\n")

@@ -55,6 +55,23 @@ class AgentLoop(
     private var warnedAt = 0
 
     /** 3 次提示 / 5 次详细 / 8 次警告 / 15 次拦下；返回 (是否执行, 提示文本) */
+    /** 工具输出回填给模型前先脱敏（照沙箱 outgate 那 8 类） */
+    private fun redact(s: String): String {
+        var t = s
+        val pats = listOf(
+            Regex("sk-[A-Za-z0-9]{16,}"),
+            Regex("AKIA[0-9A-Z]{16}"),
+            Regex("ghp_[A-Za-z0-9]{20,}"),
+            Regex("eyJ[A-Za-z0-9_-]{20,}"),
+            Regex("(?i)Bearer\\s+[A-Za-z0-9._-]{20,}"),
+            Regex("(?i)api[_-]?key\\s*[:=]\\s*\\S{12,}"),
+            Regex("(?i)password\\s*[:=]\\s*\\S+"),
+            Regex("(?i)token\\s*[:=]\\s*[\"']?[A-Za-z0-9._-]{16,}")
+        )
+        for (r in pats) t = r.replace(t, "<已脱敏>")
+        return t
+    }
+
     private fun repeatGuard(key: String): Pair<Boolean, String> {
         if (key == lastToolKey) {
             lastToolCount++
@@ -499,7 +516,7 @@ class AgentLoop(
                     history += JSONObject().apply {
                         put("role", "tool")
                         put("tool_call_id", tc.id)
-                        put("content", result.take(20000))
+                        put("content", redact(result).take(20000))
                     }
                 }
                 continue
