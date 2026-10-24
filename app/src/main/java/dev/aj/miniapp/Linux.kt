@@ -33,6 +33,16 @@ object Linux {
         "etc/alpine-release",
     )
 
+    /** 正在跑的那条命令（停止按钮用它直接掐掉） */
+    @Volatile
+    var current: Process? = null
+        private set
+
+    fun killCurrent() {
+        runCatching { current?.destroyForcibly() }
+        current = null
+    }
+
     fun rootDir(ctx: Context): File = File(ctx.filesDir, "rootfs")
 
     /**
@@ -332,8 +342,10 @@ object Linux {
             defEnv.forEach { (k, v) -> if (!env.containsKey(k)) pb.environment()[k] = v }
 
             val p = pb.start()
+            current = p
             val out = p.inputStream.bufferedReader().readText()
             val finished = p.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (current === p) current = null
             if (!finished) {
                 p.destroyForcibly()
                 -2 to (out + "\n[超时 ${timeoutSec}s，已终止]")
@@ -341,6 +353,7 @@ object Linux {
                 p.exitValue() to out
             }
         } catch (e: Exception) {
+            current = null
             -1 to "[执行失败] ${e.javaClass.simpleName}: ${e.message}"
         }
     }

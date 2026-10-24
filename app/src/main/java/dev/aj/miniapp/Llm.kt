@@ -245,6 +245,7 @@ class LlmClient(private val settings: Settings) {
                 val text = StringBuilder()
                 val slots = linkedMapOf<Int, Array<StringBuilder>>()
                 while (true) {
+                    if (cancelled) break
                     val line = src.readUtf8Line() ?: break
                     if (line.isBlank() || !line.startsWith("data:")) continue
                     val data = line.removePrefix("data:").trim()
@@ -285,7 +286,7 @@ class LlmClient(private val settings: Settings) {
                     )
                 }.filter { it.name.isNotBlank() }
 
-                Reply(text.toString().ifBlank { null }, calls)
+                if (cancelled) return Reply(text.toString().ifBlank { null }, calls, "已停止")
             }
         } catch (e: Exception) {
             Reply(null, emptyList(), if (cancelled) "已停止" else "${e.javaClass.simpleName}: ${e.message}")

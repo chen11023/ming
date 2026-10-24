@@ -43,10 +43,12 @@ class AgentLoop(
         mcp.stopAll()
     }
 
-    /** 停：界面按停止时调，掐请求 + 让循环下一轮退出 */
+    /** 停：界面按停止时调，掐请求、杀在跑的 proot 进程、掐掉 MCP 服务，循环下一轮退出 */
     fun stop() {
         stopFlag = true
         client.cancel()
+        runCatching { Linux.killCurrent() }
+        runCatching { mcp.stopAll() }
     }
 
     private val skills by lazy { SkillsStore(ctx) }
