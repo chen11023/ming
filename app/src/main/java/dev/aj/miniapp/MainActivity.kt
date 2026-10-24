@@ -33,6 +33,16 @@ class MainActivity : Activity() {
     private val transcript = StringBuilder()
     private val streamBuf = StringBuilder()
 
+    /** 语音：TTS 朗读 + 麦克风输入 */
+    private var tts: android.speech.tts.TextToSpeech? = null
+    private var sr: android.speech.SpeechRecognizer? = null
+    private var lastAnswer = ""
+    /** 本次对话里点过「全允许」就不再问了 */
+    private var allowAllThisSession = false
+
+    private lateinit var rootView: android.view.View
+    private lateinit var chatPageView: android.view.View
+
     private lateinit var diag: TextView
     private lateinit var diagSend: android.widget.Button
     private lateinit var termHost: android.widget.FrameLayout
@@ -46,6 +56,12 @@ class MainActivity : Activity() {
         envStore = EnvStore(this)
         mcp = McpManager(this)
         agent = AgentLoop(this, settings, envStore) { ev -> onAgentEvent(ev) }
+        agent.onConfirm = { what -> askConfirm(what) }
+        runCatching {
+            tts = android.speech.tts.TextToSpeech(this) { st ->
+                if (st != android.speech.tts.TextToSpeech.SUCCESS) tts = null
+            }
+        }
         loadUi()
         restoreSession()
         if (transcript.isEmpty()) {
@@ -68,12 +84,15 @@ class MainActivity : Activity() {
             setBackgroundColor(0xFFF7F7F8.toInt())
         }
 
+        rootView = root
+
         val tabs = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
         }
         val content = android.widget.FrameLayout(this)
 
         val chatPage = buildChatPage()
+        chatPageView = chatPage
         val termPage = buildTermPage()
         val setPage = buildSettingsPage()
 
@@ -105,6 +124,140 @@ class MainActivity : Activity() {
             tabs.addView(b, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
         }
         select(0)
+        applyTheme()
+    }
+
+    /** 深色 / 字号，改完立刻生效 */
+    private fun applyTheme() {
+        val dark = settings.dark
+        val bg = if (dark) 0xFF0F1115.toInt() else 0xFFF7F7F8.toInt()
+        val fg = if (dark) 0xFFE5E7EB.toInt() else 0xFF111827.toInt()
+        runCatching {
+            rootView.setBackgroundColor(bg)
+            chatPageView.setBackgroundColor(bg)
+            chatView.setBackgroundColor(bg)
+            chatView.setTextColor(fg)
+            chatView.textSize = settings.chatFont
+            chatInput.setTextColor(fg)
+        }
+        runCatching { renderAll() }
+    }
+
+    /** 工具执行前的确认卡：卡住后台线程等宿主点 */
+    private fun askConfirm(what: String): Boolean {
+        if (!settings.confirmExec || allowAllThisSession) return true
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return true
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var yes = false
+        runOnUiThread {
+            val d = android.app.AlertDialog.Builder(this)
+                .setTitle("要动手了")
+                .setMessage(what.take(900))
+                .setPositiveButton("允许") { _, _ -> yes = true; latch.countDown() }
+                .setNeutralButton("本次全允许") { _, _ ->
+                    allowAllThisSession = true; yes = true; latch.countDown()
+                }
+                .setNegativeButton("拒绝") { _, _ -> latch.countDown() }
+                .setOnCancelListener { latch.countDown() }
+                .create()
+            d.show()
+        }
+        runCatching { latch.await(120, java.util.concurrent.TimeUnit.SECONDS) }
+        return yes
+    }
+
+    /** 朗读、通知：完成时用 */
+    private fun speak(text: String) {
+        val t = tts ?: return
+        runCatching {
+            t.setLanguage(java.util.Locale.CHINA)
+            t.speak(text.take(600), android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "aj")
+        }
+    }
+
+    private fun notifyDone(text: String) {
+        if (!settings.notifyDone) return
+        runCatching {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val ch = "aj-done"
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    android.app.NotificationChannel(ch, "任务完成", android.app.NotificationManager.IMPORTANCE_DEFAULT)
+                )
+            }
+            val n = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                android.app.Notification.Builder(this, ch)
+            } else {
+                @Suppress("DEPRECATION")
+                android.app.Notification.Builder(this)
+            }
+            nm.notify(1, n
+                .setSmallIcon(android.R.drawable.stat_notify_more)
+                .setContentTitle("AJ 说完了")
+                .setContentText(text.take(60))
+                .setAutoCancel(true)
+                .build())
+        }
+    }
+
+    /** 麦克风：系统识别服务转文字，填进输入框 */
+    private fun startVoice() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2002)
+            return
+        }
+        runCatching {
+            if (sr == null) sr = android.speech.SpeechRecognizer.createSpeechRecognizer(this)
+            val i = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(
+                    android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+            }
+            sr?.setRecognitionListener(object : android.speech.RecognitionListener {
+                override fun onReadyForSpeech(p: android.os.Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(v: Float) {}
+                override fun onBufferReceived(b: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onPartialResults(p: android.os.Bundle?) {}
+                override fun onEvent(t: Int, p: android.os.Bundle?) {}
+                override fun onError(e: Int) {
+                    runOnUiThread { appendChat("提示", "没听清（code=$e），再点一次", 0xFFB45309.toInt(), false) }
+                }
+                override fun onResults(b: android.os.Bundle?) {
+                    val t = b?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull().orEmpty()
+                    runOnUiThread {
+                        if (t.isNotBlank()) {
+                            chatInput.setText(t)
+                            chatInput.setSelection(t.length)
+                        }
+                    }
+                }
+            })
+            sr?.startListening(i)
+            appendChat("提示", "说话…", 0xFF6B7280.toInt(), false)
+        }.onFailure {
+            appendChat("错误", "麦克风起不来：${it.message}", 0xFFDC2626.toInt(), false)
+        }
+    }
+
+    override fun onRequestPermissionsResult(code: Int, ps: Array<out String>, rs: IntArray) {
+        super.onRequestPermissionsResult(code, ps, rs)
+        if (code == 2002) {
+            if (rs.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED) startVoice()
+            else appendChat("提示", "没给麦克风权限，语音输入用不了。", 0xFFB45309.toInt(), false)
+        }
+    }
+
+    override fun onDestroy() {
+        runCatching { tts?.shutdown() }
+        runCatching { sr?.destroy() }
+        super.onDestroy()
     }
 
     // ------------------------------------------------------------ 聊天页
@@ -123,6 +276,23 @@ class MainActivity : Activity() {
             setOnClickListener { pickModel() }
         }
         row.addView(modelLabel, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(android.widget.TextView(this).apply {
+            text = "🔊"
+            textSize = 16f
+            setPadding(18, 10, 18, 10)
+            setTextColor(if (settings.speakReplies) 0xFF2563EB.toInt() else 0xFF9CA3AF.toInt())
+            setOnClickListener {
+                settings.speakReplies = !settings.speakReplies
+                setTextColor(if (settings.speakReplies) 0xFF2563EB.toInt() else 0xFF9CA3AF.toInt())
+                if (settings.speakReplies && lastAnswer.isNotBlank()) speak(lastAnswer)
+            }
+        })
+        row.addView(android.widget.TextView(this).apply {
+            text = "🎤"
+            textSize = 16f
+            setPadding(6, 10, 12, 10)
+            setOnClickListener { startVoice() }
+        })
         return row
     }
 
@@ -275,7 +445,19 @@ class MainActivity : Activity() {
                 }
                 is AgentLoop.Event.Answer -> {
                     appendChat("AJ", ev.text, 0xFF111827.toInt())
+                    lastAnswer = ev.text
                     outputs.render(outBox, turnStart)
+                    if (settings.speakReplies) speak(ev.text)
+                    if (!hasWindowFocus()) notifyDone(ev.text)
+                }
+                is AgentLoop.Event.Stat -> {
+                    settings.usageAdd(ev.calls, ev.chars, ev.ms)
+                    if (ev.calls > 0) appendChat(
+                        "统计",
+                        "${ev.calls} 次模型调用 · ${String.format("%.1f", ev.chars / 10000.0)} 万字符 · " +
+                            "${String.format("%.1f", ev.ms / 1000.0)}s",
+                        0xFF9CA3AF.toInt(), false
+                    )
                 }
                 is AgentLoop.Event.Error ->
                     appendChat("错误", ev.msg, 0xFFDC2626.toInt())
@@ -314,6 +496,12 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun usageLine(): String {
+        val ms = settings.usageMs
+        return "${settings.usageCalls} 次调用 · ${String.format("%.1f", settings.usageChars / 10000.0)} 万字符 · " +
+            "累计 ${ms / 60000} 分 ${(ms % 60000) / 1000} 秒"
     }
 
     private fun kb(n: Long): String = when {
@@ -356,6 +544,7 @@ class MainActivity : Activity() {
         // startNew 会先把当前会话存盘，历史不会丢
         runCatching { agent.startNew(id) }
         curSession = id
+        allowAllThisSession = false
         transcript.setLength(0)
         streamBuf.setLength(0)
         chatView.text = ""
@@ -417,6 +606,7 @@ class MainActivity : Activity() {
         if (id == curSession) return
         val n = runCatching { agent.switchTo(id) }.getOrDefault(0)
         curSession = id
+        allowAllThisSession = false
         transcript.setLength(0)
         streamBuf.setLength(0)
         chatView.text = ""
@@ -670,6 +860,51 @@ class MainActivity : Activity() {
                 android.widget.Toast.makeText(
                     this@MainActivity, "已新增并启用「$name」", android.widget.Toast.LENGTH_SHORT
                 ).show()
+            }
+        })
+
+        // ---------------- 界面与行为
+        v.addView(label("界面与行为"))
+        fun chk(name: String, get: () -> Boolean, set: (Boolean) -> Unit): android.widget.CheckBox =
+            android.widget.CheckBox(this).apply {
+                text = name
+                textSize = 13f
+                isChecked = get()
+                setOnCheckedChangeListener { _, b -> set(b) }
+            }
+        v.addView(chk("深色模式", { settings.dark }, { settings.dark = it; applyTheme() }))
+        v.addView(android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(android.widget.TextView(this@MainActivity).apply {
+                text = "字号  ${settings.chatFont.toInt()}"
+                textSize = 13f
+                setPadding(0, 16, 16, 0)
+            }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "A-"
+                setOnClickListener { settings.chatFont = settings.chatFont - 1f; applyTheme() }
+            })
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "A+"
+                setOnClickListener { settings.chatFont = settings.chatFont + 1f; applyTheme() }
+            })
+        })
+        v.addView(chk("执行命令 / 出图前弹确认卡", { settings.confirmExec }, { settings.confirmExec = it }))
+        v.addView(chk("回答自动朗读", { settings.speakReplies }, { settings.speakReplies = it }))
+        v.addView(chk("任务完成发系统通知", { settings.notifyDone }, { settings.notifyDone = it }))
+
+        // ---------------- 用量
+        v.addView(label("用量（累计，跨会话）"))
+        val usageTv = TextView(this).apply {
+            text = usageLine()
+            textSize = 13f
+        }
+        v.addView(usageTv)
+        v.addView(android.widget.Button(this).apply {
+            text = "清零"
+            setOnClickListener {
+                settings.usageReset()
+                usageTv.text = usageLine()
             }
         })
 

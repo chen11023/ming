@@ -117,6 +117,48 @@ class Settings(ctx: Context) {
         get() = sp.getString("systemPrompt", DEFAULT_SYSTEM) ?: DEFAULT_SYSTEM
         set(v) = sp.edit().putString("systemPrompt", v).apply()
 
+    /** 执行命令 / 出图前弹确认卡（默认开） */
+    var confirmExec: Boolean
+        get() = sp.getBoolean("confirmExec", true)
+        set(v) = sp.edit().putBoolean("confirmExec", v).apply()
+
+    /** 深色模式 */
+    var dark: Boolean
+        get() = sp.getBoolean("dark", false)
+        set(v) = sp.edit().putBoolean("dark", v).apply()
+
+    /** 聊天字号 */
+    var chatFont: Float
+        get() = sp.getFloat("chatFont", 15f)
+        set(v) = sp.edit().putFloat("chatFont", v.coerceIn(11f, 26f)).apply()
+
+    /** 回答自动朗读 */
+    var speakReplies: Boolean
+        get() = sp.getBoolean("speak", false)
+        set(v) = sp.edit().putBoolean("speak", v).apply()
+
+    /** 完成时发系统通知 */
+    var notifyDone: Boolean
+        get() = sp.getBoolean("notifyDone", true)
+        set(v) = sp.edit().putBoolean("notifyDone", v).apply()
+
+    // ------------------------------------------------ 用量（累计，跨会话）
+    fun usageAdd(calls: Int, chars: Long, ms: Long) {
+        sp.edit()
+            .putInt("u.calls", sp.getInt("u.calls", 0) + calls)
+            .putLong("u.chars", sp.getLong("u.chars", 0L) + chars)
+            .putLong("u.ms", sp.getLong("u.ms", 0L) + ms)
+            .apply()
+    }
+
+    val usageCalls: Int get() = sp.getInt("u.calls", 0)
+    val usageChars: Long get() = sp.getLong("u.chars", 0L)
+    val usageMs: Long get() = sp.getLong("u.ms", 0L)
+
+    fun usageReset() {
+        sp.edit().remove("u.calls").remove("u.chars").remove("u.ms").apply()
+    }
+
     /** 工具循环最多跑几轮，防止模型死循环 */
     var maxTurns: Int
         get() = sp.getInt("maxTurns", 12)

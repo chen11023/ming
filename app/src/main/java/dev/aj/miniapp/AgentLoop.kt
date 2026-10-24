@@ -27,6 +27,8 @@ class AgentLoop(
         class Error(val msg: String) : Event()
         /** 流式增量，界面拿它实时刷新 */
         class Delta(val text: String) : Event()
+        /** 一轮跑完的用量：模型调用次数 / 字符数 / 耗时 */
+        class Stat(val calls: Int, val chars: Long, val ms: Long) : Event()
     }
 
     private val client = LlmClient(settings)
@@ -34,6 +36,18 @@ class AgentLoop(
 
     @Volatile
     private var stopFlag = false
+
+    /** 界面提供的确认器：返回 true 才动手。没挂或设置里关了就直接放行 */
+    var onConfirm: ((String) -> Boolean)? = null
+
+    private var statCalls = 0
+    private var statChars = 0L
+
+    private fun confirm(what: String): Boolean {
+        if (!settings.confirmExec) return true
+        val f = onConfirm ?: return true
+        return runCatching { f(what) }.getOrDefault(false)
+    }
 
     /** MCP 工具清单缓存，改配置后清掉重拉 */
     private var mcpTools: org.json.JSONArray? = null
@@ -131,10 +145,14 @@ class AgentLoop(
     fun send(userText: String, parts: List<JSONObject> = emptyList()) {
         stopFlag = false
         client.resetCancel()
+        statCalls = 0
+        statChars = 0L
+        val t0 = System.currentTimeMillis()
         try {
             turn(userText, parts)
         } finally {
             save()
+            onEvent(Event.Stat(statCalls, statChars, System.currentTimeMillis() - t0))
         }
     }
 
@@ -197,6 +215,9 @@ class AgentLoop(
                 .getOrDefault(org.json.JSONArray())
                 .also { mcpTools = it }
             val reply = client.chatStream(history, extra) { d -> onEvent(Event.Delta(d)) }
+            statCalls++
+            statChars += (reply.text?.length ?: 0).toLong() +
+                reply.toolCalls.sumOf { it.arguments.length.toLong() }
 
             if (reply.error != null) {
                 onEvent(Event.Error(reply.error!!))
@@ -235,6 +256,23 @@ class AgentLoop(
                     val cmd = runCatching {
                         JSONObject(tc.arguments).optString("command", "")
                     }.getOrDefault("")
+
+                    // 动手前确认（设置里可关）
+                    val label = when {
+                        tc.name == "draw" ->
+                            "出图：" + runCatching { JSONObject(tc.arguments).optString("prompt") }.getOrDefault("")
+                        tc.name.startsWith("mcp__") -> "调用 MCP 工具：${tc.name}"
+                        else -> "执行命令：" + cmd
+                    }
+                    if (!confirm(label)) {
+                        onEvent(Event.Thinking("已拒绝 —— $label".take(160)))
+                        history += JSONObject().apply {
+                            put("role", "tool")
+                            put("tool_call_id", tc.id)
+                            put("content", "[已取消] 宿主拒绝执行：$label")
+                        }
+                        continue
+                    }
 
                     val result = when {
                         tc.name == "draw" -> {
