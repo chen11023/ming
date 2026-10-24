@@ -39,6 +39,8 @@ class MainActivity : Activity() {
     private var lastAnswer = ""
     /** 本次对话里点过「全允许」就不再问了 */
     private var allowAllThisSession = false
+    private val EXPORT_CODE = 3001
+    private val IMPORT_CODE = 3002
 
     private lateinit var rootView: android.view.View
     private lateinit var chatPageView: android.view.View
@@ -465,6 +467,57 @@ class MainActivity : Activity() {
         }
     }
 
+    private var pendingExport: String? = null
+
+    private fun startExport() {
+        pendingExport = buildExport()
+        val i = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(
+                android.content.Intent.EXTRA_TITLE,
+                "aj-config-" + java.text.SimpleDateFormat("MMdd-HHmm", java.util.Locale.US)
+                    .format(java.util.Date()) + ".json"
+            )
+        }
+        runCatching { startActivityForResult(i, EXPORT_CODE) }
+            .onFailure { appendChat("错误", "打不开保存对话框：${it.message}", 0xFFDC2626.toInt(), false) }
+    }
+
+    private fun startImport() {
+        val i = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        runCatching { startActivityForResult(i, IMPORT_CODE) }
+            .onFailure { appendChat("错误", "打不开文件选择器：${it.message}", 0xFFDC2626.toInt(), false) }
+    }
+
+    /** 设置 + MCP 列表打成一份 JSON */
+    private fun buildExport(): String {
+        val o = org.json.JSONObject(settings.exportConfig())
+        runCatching {
+            val f = java.io.File(filesDir, "mcp/servers.json")
+            if (f.exists()) o.put("mcp", org.json.JSONArray(f.readText()))
+        }
+        return o.toString(2)
+    }
+
+    private fun applyImport(text: String) {
+        val msg = settings.importConfig(text)
+        runCatching {
+            val m = org.json.JSONObject(text).optJSONArray("mcp")
+            if (m != null) {
+                val d = java.io.File(filesDir, "mcp").apply { mkdirs() }
+                java.io.File(d, "servers.json").writeText(m.toString())
+                agent.refreshMcp()
+            }
+        }
+        allowAllThisSession = false
+        applyTheme()
+        appendChat("提示", "配置$msg，MCP 列表已同步。", 0xFF16A34A.toInt(), false)
+    }
+
     private fun pickFiles() {
         val i = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(android.content.Intent.CATEGORY_OPENABLE)
@@ -478,7 +531,38 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != PICK || resultCode != RESULT_OK || data == null) return
+        if (resultCode != RESULT_OK || data == null) return
+
+        if (requestCode == EXPORT_CODE) {
+            val uri = data.data ?: return
+            runCatching {
+                contentResolver.openOutputStream(uri)?.use { it.write((pendingExport ?: "").toByteArray()) }
+            }.onSuccess {
+                appendChat("提示", "配置已导出到所选位置。", 0xFF16A34A.toInt(), false)
+            }.onFailure {
+                appendChat("错误", "导出失败：${it.message}", 0xFFDC2626.toInt(), false)
+            }
+            return
+        }
+        if (requestCode == IMPORT_CODE) {
+            val uri = data.data ?: return
+            val t = runCatching {
+                contentResolver.openInputStream(uri)?.bufferedReader()?.readText().orEmpty()
+            }.getOrElse {
+                appendChat("错误", "读不到文件：${it.message}", 0xFFDC2626.toInt(), false)
+                return
+            }
+            if (t.isBlank()) {
+                appendChat("错误", "文件是空的。", 0xFFDC2626.toInt(), false)
+                return
+            }
+            runCatching { applyImport(t) }.onFailure {
+                appendChat("错误", "导入失败：${it.message}", 0xFFDC2626.toInt(), false)
+            }
+            return
+        }
+
+        if (requestCode != PICK) return
         val uris = mutableListOf<android.net.Uri>()
         data.clipData?.let { c -> for (i in 0 until c.itemCount) c.getItemAt(i)?.uri?.let { uris += it } }
         if (uris.isEmpty()) data.data?.let { uris += it }
@@ -906,6 +990,27 @@ class MainActivity : Activity() {
                 settings.usageReset()
                 usageTv.text = usageLine()
             }
+        })
+
+        // ---------------- 配置搬家
+        v.addView(label("配置导出 / 导入"))
+        v.addView(TextView(this).apply {
+            text = "导出成一份 JSON：配置档（key 明文，自己保管）、系统提示、开关、MCP 列表。换机或重装后导入就恢复。"
+            textSize = 12f
+            setTextColor(0xFF9CA3AF.toInt())
+        })
+        v.addView(android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "导出配置"
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+                setOnClickListener { startExport() }
+            })
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "导入配置"
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+                setOnClickListener { startImport() }
+            })
         })
 
         // ---------------- MCP 服务

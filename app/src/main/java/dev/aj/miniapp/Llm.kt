@@ -159,6 +159,61 @@ class Settings(ctx: Context) {
         sp.edit().remove("u.calls").remove("u.chars").remove("u.ms").apply()
     }
 
+    // ------------------------------------------------ 配置导出 / 导入（换机、重装用）
+    /** 导出成一段 JSON。含明文 key（换机后也能用），文件请自己保管 */
+    fun exportConfig(): String {
+        val o = org.json.JSONObject()
+        o.put("app", "aj-mini")
+        o.put("ver", 1)
+        o.put("systemPrompt", systemPrompt)
+        o.put("maxTurns", maxTurns)
+        o.put("confirmExec", confirmExec)
+        o.put("dark", dark)
+        o.put("chatFont", chatFont.toDouble())
+        o.put("speakReplies", speakReplies)
+        o.put("notifyDone", notifyDone)
+        val arr = org.json.JSONArray()
+        for (p in profiles()) {
+            arr.put(org.json.JSONObject().apply {
+                put("name", p.name)
+                put("baseUrl", p.baseUrl)
+                put("model", p.model)
+                put("key", runCatching { p.key }.getOrDefault(""))
+            })
+        }
+        o.put("profiles", arr)
+        o.put("active", activeIndex)
+        return o.toString(2)
+    }
+
+    /** 导入：配置档整体替换，其它开关覆盖。返回一句人话 */
+    fun importConfig(text: String): String {
+        val o = org.json.JSONObject(text)
+        val arr = o.optJSONArray("profiles") ?: org.json.JSONArray()
+        val list = mutableListOf<Profile>()
+        for (i in 0 until arr.length()) {
+            val p = arr.getJSONObject(i)
+            list += Profile(
+                p.optString("name", "配置${i + 1}"),
+                p.optString("baseUrl", DEFAULT_BASE),
+                p.optString("model", DEFAULT_MODEL),
+                Vault.encrypt(p.optString("key", ""))
+            )
+        }
+        if (list.isNotEmpty()) {
+            saveProfiles(list)
+            activeIndex = o.optInt("active", 0).coerceIn(0, list.size - 1)
+        }
+        if (o.has("systemPrompt")) systemPrompt = o.optString("systemPrompt", DEFAULT_SYSTEM)
+        if (o.has("maxTurns")) maxTurns = o.optInt("maxTurns", maxTurns)
+        confirmExec = o.optBoolean("confirmExec", confirmExec)
+        dark = o.optBoolean("dark", dark)
+        speakReplies = o.optBoolean("speakReplies", speakReplies)
+        notifyDone = o.optBoolean("notifyDone", notifyDone)
+        if (o.has("chatFont")) chatFont = o.optDouble("chatFont", 15.0).toFloat()
+        return "导入 ${list.size} 个配置档"
+    }
+
     /** 工具循环最多跑几轮，防止模型死循环 */
     var maxTurns: Int
         get() = sp.getInt("maxTurns", 12)
