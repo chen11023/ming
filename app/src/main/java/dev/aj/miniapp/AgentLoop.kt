@@ -43,6 +43,46 @@ class AgentLoop(
     private var statCalls = 0
     private var statChars = 0L
 
+    // 同一调用连续重复的计数，换新会话/新任务时重置
+    private var lastToolKey = ""
+    private var lastToolCount = 0
+    private var lastToolWarned = 0
+    private var warnedAt = 0
+
+    /** 3 次提示 / 5 次详细 / 8 次警告 / 15 次拦下；返回 (是否执行, 提示文本) */
+    private fun repeatGuard(key: String): Pair<Boolean, String> {
+        if (key == lastToolKey) {
+            lastToolCount++
+        } else {
+            lastToolKey = key
+            lastToolCount = 1
+            warnedAt = 0
+        }
+        val n = lastToolCount
+        if (n >= 15) {
+            return false to "[已拦下] 同一调用已连续 $n 次，结果不会变。换个做法，或直接说明卡在哪。"
+        }
+        var warn = ""
+        if (n >= 8 && warnedAt < 8) {
+            warnedAt = 8
+            warn = "[警告] 同一调用已第 $n 次，再重复只会浪费时间。"
+        } else if (n >= 5 && warnedAt < 5) {
+            warnedAt = 5
+            warn = "[提醒] 同一调用第 $n 次：${key.take(120)}。先看上一次的报错，别原样再来。"
+        } else if (n >= 3 && warnedAt < 3) {
+            warnedAt = 3
+            warn = "[提示] 这一步重复了 $n 次，确认参数是不是写错了。"
+        }
+        return true to warn
+    }
+
+    /** 新任务开始时清掉重复计数 */
+    private fun resetRepeat() {
+        lastToolKey = ""
+        lastToolCount = 0
+        warnedAt = 0
+    }
+
     private fun confirm(what: String): Boolean {
         if (!settings.confirmExec) return true
         val f = onConfirm ?: return true
@@ -147,6 +187,7 @@ class AgentLoop(
         client.resetCancel()
         statCalls = 0
         statChars = 0L
+        resetRepeat()
         val t0 = System.currentTimeMillis()
         try {
             turn(userText, parts)
@@ -257,6 +298,18 @@ class AgentLoop(
                         JSONObject(tc.arguments).optString("command", "")
                     }.getOrDefault("")
 
+                    // 同一调用连续重复：3 次提示 / 5 次详细 / 8 次警告 / 15 次拦下
+                    val (rgOk, rgWarn) = repeatGuard(tc.name + "|" + tc.arguments)
+                    if (!rgOk) {
+                        onEvent(Event.Output(rgWarn))
+                        history += JSONObject().apply {
+                            put("role", "tool")
+                            put("tool_call_id", tc.id)
+                            put("content", rgWarn)
+                        }
+                        continue
+                    }
+
                     // 动手前确认（设置里可关）
                     val label = when {
                         tc.name == "draw" ->
@@ -278,7 +331,7 @@ class AgentLoop(
                         continue
                     }
 
-                    val result = when {
+                    val rawResult = when {
                         tc.name == "remind" -> {
                             val args = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
                             val d = Remind.parseDelay(args.optString("delay", "10"))
@@ -323,6 +376,7 @@ class AgentLoop(
                         }
                     }
 
+                    val result = if (rgWarn.isBlank()) rawResult else "$rawResult\n$rgWarn"
                     history += JSONObject().apply {
                         put("role", "tool")
                         put("tool_call_id", tc.id)

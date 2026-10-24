@@ -471,7 +471,32 @@ class LlmClient(private val settings: Settings) {
     }
 
     /** 消息历史用 JSONObject 列表表示，直接透传回接口 */
+    /** 瞬时错误的重试策略：只重试 429/超时/5xx，配置类错误直接返回 */
+    private val retryableRe = Regex(
+        "429|rate.?limit|too many requests|timeout|timed out|50[234]|overload|busy|unavailable",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun retryable(msg: String): Boolean = retryableRe.containsMatchIn(msg)
+
+    private fun backoffMs(attempt: Int): Long {
+        val base = if (attempt <= 1) 2000L else 4000L
+        val jitter = (base / 3).coerceAtLeast(1L)
+        return base - jitter + (Math.random() * 2 * jitter).toLong()
+    }
+
     fun chat(history: List<JSONObject>, extraTools: org.json.JSONArray? = null): Reply {
+        var attempt = 0
+        while (true) {
+            attempt++
+            val r = chatOnce(history, extraTools)
+            val err = r.error ?: return r
+            if (cancelled || attempt >= 3 || !retryable(err)) return r
+            Thread.sleep(backoffMs(attempt))
+        }
+    }
+
+    private fun chatOnce(history: List<JSONObject>, extraTools: org.json.JSONArray? = null): Reply {
         if (!settings.configured) {
             return Reply(null, emptyList(), "还没填 API key，去设置页填一下")
         }
@@ -516,6 +541,22 @@ class LlmClient(private val settings: Settings) {
     private fun markNoStream() = settings.markNoStream(settings.baseUrl, settings.model)
 
     fun chatStream(
+        history: List<JSONObject>,
+        extraTools: org.json.JSONArray? = null,
+        onDelta: (String) -> Unit
+    ): Reply {
+        var attempt = 0
+        var emitted = false
+        while (true) {
+            attempt++
+            val r = chatStreamOnce(history, extraTools) { emitted = true; onDelta(it) }
+            val err = r.error ?: return r
+            if (cancelled || emitted || attempt >= 3 || !retryable(err)) return r
+            Thread.sleep(backoffMs(attempt))
+        }
+    }
+
+    private fun chatStreamOnce(
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
         onDelta: (String) -> Unit
