@@ -346,6 +346,24 @@ class AgentLoop(
         }.getOrDefault("")
     }
 
+    /** 把压缩掉的那一段原样写进 /sdcard/Minis/archive/<会话>.md，追加不覆盖 */
+    private fun archive(mid: List<JSONObject>, cut: Int): String {
+        if (mid.isEmpty()) return ""
+        val dir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "Minis/archive").apply { mkdirs() }
+        val f = java.io.File(dir, "$sessionId.md")
+        val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date())
+        val sb = StringBuilder()
+        sb.append("\n\n## ").append(ts).append(" · 归档 ").append(cut).append(" 条（会话 ").append(sessionId).append("）\n\n")
+        for (m in mid) {
+            var t = m.optString("content", "")
+            if (t.isBlank() && m.has("tool_calls")) t = "[调用工具] " + m.optJSONArray("tool_calls").toString()
+            if (t.isBlank()) continue
+            sb.append("**").append(m.optString("role", "?")).append("**：").append(t).append("\n\n")
+        }
+        f.appendText(sb.toString())
+        return f.absolutePath
+    }
+
     private fun compress() {
         val others = history.filter { it.optString("role") != "system" }
         val chars = others.sumOf { it.toString().length }
@@ -356,14 +374,17 @@ class AgentLoop(
         while (cut < others.size - 1 && others[cut].optString("role") != "user") cut++
         val sys = history.firstOrNull { it.optString("role") == "system" }
         val tail = others.subList(cut, others.size).toList()
+        // 压缩掉的中段先落盘归档，随时能回看（沙箱同样的做法）
+        val arch = runCatching { archive(others.subList(0, cut), cut) }.getOrDefault("")
         history.clear()
         sys?.let { history += it }
         val mid = others.subList(0, cut).toList()
         val sum = if (settings.compressSummary) checkpoint(mid) else ""
         history += JSONObject().apply {
             put("role", "user")
-            put("content", if (sum.isBlank()) "[前 $cut 条历史已省略]"
-                          else "[较早的 $cut 条历史，已整理成下面这份摘要]\n$sum")
+            put("content", (if (sum.isBlank()) "[前 $cut 条历史已省略]"
+                          else "[较早的 $cut 条历史，已整理成下面这份摘要]\n$sum") +
+                          (if (arch.isBlank()) "" else "\n（被压缩的原文已存档：$arch —— 需要细节时用 sh 读它）"))
         }
         history += JSONObject().apply {
             put("role", "assistant")
@@ -472,6 +493,10 @@ class AgentLoop(
                         tc.name == "write_file" ->
                             "写文件：" + runCatching { JSONObject(tc.arguments).optString("path") }.getOrDefault("")
                         tc.name == "ask_user" -> ""
+                        tc.name == "browse" ->
+                            "打开网页：" + runCatching { JSONObject(tc.arguments).optString("url") }.getOrDefault("")
+                        tc.name == "task" ->
+                            "派子代理：" + runCatching { JSONObject(tc.arguments).optString("prompt") }.getOrDefault("").take(60)
                         tc.name.startsWith("mcp__") -> "调用 MCP 工具：${tc.name}"
                         else -> "执行命令：" + cmd
                     }
@@ -532,6 +557,17 @@ class AgentLoop(
                             val r = mcp.call(tc.name, tc.arguments)
                             onEvent(Event.Output(r))
                             r
+                        }
+                        tc.name == "browse" -> {
+                            val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            val u = a.optString("url", "")
+                            val m = a.optString("mode", "text")
+                            onEvent(Event.Command("browse $u"))
+                            if (u.isBlank()) "[参数错误] 没有 url" else {
+                                val r = Browse.open(ctx, u, m)
+                                onEvent(Event.Output(r.take(2000)))
+                                r
+                            }
                         }
                         tc.name == "task" -> {
                             val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())

@@ -906,6 +906,12 @@ class LlmClient(private val settings: Settings) {
     ).put(tool("skill",
         "查技能说明书。不给 name 就列出这台机器上所有技能；给 name 就返回那份 SKILL.md 正文。动手做不确定的事之前先用它。",
         mapOf("name" to ("string" to "技能名，如 ppt、pdf、xlsx；留空列清单")), emptyList())
+    ).put(tool("browse",
+        "用手机自带的 Chrome 内核打开网页：能跑 JS、能取正文、能整页截图。查资料、看文档、读新闻用它；curl 抓不到的动态页也好使。",
+        mapOf(
+            "url" to ("string" to "网址，http/https 可省略"),
+            "mode" to ("string" to "text 取正文（默认）／shot 整页截图存到 /out")
+        ), listOf("url"))
     ).put(tool("task",
         "把一整件独立的活派给子代理跑：它有自己的上下文和完整工具（sh/读写文件/技能等），跑完只把结论带回来，" +
         "不占你的对话历史。适合要翻很多文件、试很多次、只需要最终结果的活。最多同时 3 个，子代理不能再派子代理。",
