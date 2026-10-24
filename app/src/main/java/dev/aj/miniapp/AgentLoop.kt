@@ -117,6 +117,14 @@ class AgentLoop(
         sb.append("\n\n## 产物输出\n")
         sb.append("图片、图表、视频、文档等产物一律写进 /out 目录（例如 /out/chart.png）。")
         sb.append("写完后只回一句说明路径，不要把 base64 或 ANSI 彩色字符贴进对话——App 会自动在聊天里显示 /out 里的新文件。\n")
+        sb.append("\n\n## 先查再问（不确定时的固定走法）\n")
+        sb.append("不知道某个东西在哪、能不能用、怎么走 —— 不要凭印象答，也不要先问用户，先自己查：\n")
+        sb.append("1. 有现成技能：`ls /var/minis/skills` 或 `ls ~/skills` 看目录，读到就用（App 内技能在 files/skills 已经注入到你的上下文，沙箱里的要自己 ls）。\n")
+        sb.append("2. 找文件/找线索：`rg -n 关键词 /path`（比 grep 快），找不到再放宽目录。\n")
+        sb.append("3. 探服务：`curl -s -o /dev/null -w '%{http_code}' 地址`，或 `ss -lntp` 看端口在不在。\n")
+        sb.append("4. 试命令：先 `--help` 或 `-h`，再小范围试一次；失败换参数不换说法。\n")
+        sb.append("5. 查完再答，答的时候说清楚依据（哪条命令、什么输出）。真查不到就说查不到。\n")
+        sb.append("6. 摸出来的结论写进 `/out/notes-日期.md`，下次遇到同样的问题先读它。\n")
         val mem = memory.recent()
         if (mem.isNotBlank()) {
             sb.append("\n\n## 记忆（之前的对话，供参考）\n").append(mem)
@@ -161,7 +169,11 @@ class AgentLoop(
         return load()
     }
 
+    /** 定背后台任务用：不落盘，绝不碰用户的会话文件 */
+    var persist: Boolean = true
+
     fun save() {
+        if (!persist) return
         runCatching {
             val arr = org.json.JSONArray()
             history.filter { it.optString("role") != "system" }.forEach { arr.put(it) }

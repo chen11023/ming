@@ -61,6 +61,7 @@ class MainActivity : Activity() {
         MemoryStore(this).ensure()
         envStore = EnvStore(this)
         mcp = McpManager(this)
+        runCatching { Sched.arm(this) }
         agent = AgentLoop(this, settings, envStore) { ev -> onAgentEvent(ev) }
         agent.onConfirm = { what -> askConfirm(what) }
         runCatching {
@@ -434,6 +435,47 @@ class MainActivity : Activity() {
         val t = chatInput.text.toString().trim()
         turnStart = System.currentTimeMillis() - 2000
         if (t.isEmpty() && pending.isEmpty()) return
+        // 本地命令：/every 30m 提示词 或 /every 2h !shell 命令 —— 循环定时任务
+        if (t.startsWith("/every ")) {
+            val rest = t.substringAfter("/every ").trim()
+            val sp = rest.indexOf(' ')
+            val head = if (sp > 0) rest.substring(0, sp) else rest
+            val body = if (sp > 0) rest.substring(sp + 1).trim() else ""
+            val d = Remind.parseDelay(head)
+            chatInput.setText("")
+            if (d <= 0 || body.isBlank()) {
+                appendChat("提示", "用法：/every 30m 提示词 或 /every 2h !命令（m 分 / h 小时 / d 天）", 0xFFDC2626.toInt(), false)
+                return
+            }
+            val kind = if (body.startsWith("!")) "shell" else "prompt"
+            val text = if (kind == "shell") body.substring(1).trim() else body
+            val task = Sched.add(this, body, d)
+            appendChat("定时", "已建 #${task.id}：每 ${Remind.whenText(d).removePrefix("约 ")} 执行一次（${if (kind == "shell") "沙箱命令" else "问模型"}）：$text", 0xFF16A34A.toInt(), false)
+            return
+        }
+        if (t == "/tasks") {
+            chatInput.setText("")
+            val list = Sched.load(this)
+            if (list.isEmpty()) {
+                appendChat("定时", "还没有循环任务。用法：/every 30m 提示词", 0xFF6B7280.toInt(), false)
+            } else {
+                val now = System.currentTimeMillis()
+                appendChat("定时", list.joinToString("\n") { x ->
+                    val kind = if (x.kind == "shell") "命令" else "问模型"
+                    val left = ((x.next - now) / 60000).coerceAtLeast(0)
+                    "#${x.id} 每${x.everyMs / 60000}分·$kind · ${left}分后 · ${x.text.take(40)}"
+                }, 0xFF6B7280.toInt(), false)
+            }
+            return
+        }
+        if (t.startsWith("/del ")) {
+            val id = t.substringAfter("/del ").trim().toIntOrNull()
+            chatInput.setText("")
+            if (id == null) { appendChat("提示", "用法：/del 3", 0xFFDC2626.toInt(), false); return }
+            val ok = Sched.remove(this, id)
+            appendChat("定时", if (ok) "已删除 #$id" else "没有 #$id", if (ok) 0xFF16A34A.toInt() else 0xFFDC2626.toInt(), false)
+            return
+        }
         // 本地命令：/r 10m 喝水 —— 直接设系统提醒，不发给模型
         if (t.startsWith("/r ") || t.startsWith("/remind ")) {
             val rest = t.substringAfter(' ').trim()
@@ -550,6 +592,46 @@ class MainActivity : Activity() {
         }
         runCatching { startActivityForResult(i, EXPORT_CODE) }
             .onFailure { appendChat("错误", "打不开保存对话框：${it.message}", 0xFFDC2626.toInt(), false) }
+    }
+
+    /** 入站 SSH：rootfs 里跑 sshd，别人拿地址+密码连进来 */
+    private fun showSsh() {
+        val msg = android.widget.TextView(this).apply {
+            text = "读取中…"
+            setPadding(48, 24, 48, 0)
+            textSize = 13f
+        }
+        val dlg = android.app.AlertDialog.Builder(this)
+            .setTitle("SSH 入口")
+            .setView(msg)
+            .setPositiveButton("开启", null)
+            .setNeutralButton("重置密码", null)
+            .setNegativeButton("关闭", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                msg.text = "安装 / 初始化中…\n首次要装 openssh，大约一分钟。"
+                thread {
+                    val a = Sshd.ensure(this)
+                    val b = Sshd.start(this)
+                    settings.sshOn = true
+                    val txt = "$a\n$b\n\n" + Sshd.info(this)
+                    runOnUiThread { msg.text = txt }
+                }
+            }
+            dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                thread {
+                    Sshd.resetPassword(this)
+                    val txt = Sshd.ensure(this) + "\n\n" + Sshd.info(this)
+                    runOnUiThread { msg.text = txt }
+                }
+            }
+        }
+        dlg.show()
+        thread {
+            val txt = Sshd.info(this)
+            runOnUiThread { msg.text = txt }
+        }
     }
 
     /** 查最新发布，有新版就下载，下完直接弹安装器 */
@@ -1301,6 +1383,10 @@ class MainActivity : Activity() {
             })
         })
         v.addView(chk("主模型挂了自动切备用（同服务商，最多 2 个）", { settings.autoFallback }, { settings.autoFallback = it }))
+        v.addView(android.widget.Button(this@MainActivity).apply {
+            text = "SSH 入口（别人连进这台手机）"
+            setOnClickListener { showSsh() }
+        })
         v.addView(chk("执行命令 / 出图前弹确认卡", { settings.confirmExec }, { settings.confirmExec = it }))
         v.addView(chk("回答自动朗读", { settings.speakReplies }, { settings.speakReplies = it }))
         v.addView(chk("任务完成发系统通知", { settings.notifyDone }, { settings.notifyDone = it }))

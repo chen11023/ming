@@ -252,6 +252,15 @@ class Settings(ctx: Context) {
         get() = sp.getString("systemPrompt", DEFAULT_SYSTEM) ?: DEFAULT_SYSTEM
         set(v) = sp.edit().putString("systemPrompt", v).apply()
 
+    /** 入站 SSH 开关与端口 */
+    var sshOn: Boolean
+        get() = sp.getBoolean("sshOn", false)
+        set(v) = sp.edit().putBoolean("sshOn", v).apply()
+
+    var sshPort: Int
+        get() = sp.getInt("sshPort", 2222)
+        set(v) = sp.edit().putInt("sshPort", v).apply()
+
     /** 主模型失败时自动切同一服务商下的备用模型（默认开，最多再试 2 个） */
     var autoFallback: Boolean
         get() = sp.getBoolean("autoFallback", true)
