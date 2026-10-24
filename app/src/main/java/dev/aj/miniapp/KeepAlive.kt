@@ -62,16 +62,23 @@ class KeepAliveService : Service() {
     /** 每 45 秒看一眼网页子 AJ：开了却没应答就重新拉起 */
     private fun startWatch() {
         if (wd != null) return
-        wd = Thread {
-            while (!isInterrupted) {
+        val t = Thread {
+            while (!Thread.currentThread().isInterrupted) {
                 runCatching {
                     val ctx = applicationContext
                     if (Settings(ctx).webOn && !WebAj.running(ctx)) WebAj.start(ctx)
                 }
-                try { Thread.sleep(45_000) } catch (e: InterruptedException) { return@Thread }
+                try {
+                    Thread.sleep(45_000)
+                } catch (e: InterruptedException) {
+                    return@Thread
+                }
             }
-        }.apply { isDaemon = true; name = "ajweb-watch" }
-        wd!!.start()
+        }
+        t.isDaemon = true
+        t.name = "ajweb-watch"
+        wd = t
+        t.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
