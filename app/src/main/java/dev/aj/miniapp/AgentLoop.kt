@@ -212,6 +212,19 @@ class AgentLoop(
                     }.getOrDefault("")
 
                     val result = when {
+                        tc.name == "draw" -> {
+                            val args = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            val prompt = args.optString("prompt", "")
+                            val size = args.optString("size", "1024x1024")
+                            onEvent(Event.Command("draw $prompt"))
+                            val r = if (prompt.isBlank()) {
+                                "[参数错误] 没有 prompt"
+                            } else {
+                                ImageGen.generate(ctx, prompt, ImageGen.keyOf(envStore.asEnv()), size)
+                                    .also { onEvent(Event.Output(it)) }
+                            }
+                            r
+                        }
                         tc.name.startsWith("mcp__") -> {
                             onEvent(Event.Command("${tc.name} ${tc.arguments.take(300)}"))
                             val r = mcp.call(tc.name, tc.arguments)

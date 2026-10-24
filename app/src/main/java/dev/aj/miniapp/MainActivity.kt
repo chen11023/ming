@@ -264,8 +264,10 @@ class MainActivity : Activity() {
                     appendChat("思考", ev.text, 0xFF6B7280.toInt())
                 is AgentLoop.Event.Command ->
                     appendChat("执行", ev.cmd, 0xFF7C3AED.toInt())
-                is AgentLoop.Event.Output ->
+                is AgentLoop.Event.Output -> {
                     appendChat("输出", ev.text.ifBlank { "(无输出)" }, 0xFF059669.toInt())
+                    outputs.render(outBox, turnStart)
+                }
                 is AgentLoop.Event.Answer -> {
                     appendChat("AJ", ev.text, 0xFF111827.toInt())
                     outputs.render(outBox, turnStart)

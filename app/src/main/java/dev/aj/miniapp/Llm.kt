@@ -358,6 +358,32 @@ class LlmClient(private val settings: Settings) {
                 })
             })
         }
+    ).put(
+        JSONObject().apply {
+            put("type", "function")
+            put("function", JSONObject().apply {
+                put("name", "draw")
+                put(
+                    "description",
+                    "根据文字描述画一张图，生成后自动显示在聊天里、保存到 /out。用户说画图、来一张、生成图片、配图时用它。" +
+                        "描述要具体（主体、风格、光线、构图）；一次只画一张，不要连续画多张。"
+                )
+                put("parameters", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject().apply {
+                        put("prompt", JSONObject().apply {
+                            put("type", "string")
+                            put("description", "画面描述，中文即可，越具体越好")
+                        })
+                        put("size", JSONObject().apply {
+                            put("type", "string")
+                            put("description", "尺寸，默认 1024x1024，可选 768x1344（竖）、1344x768（横）")
+                        })
+                    })
+                    put("required", org.json.JSONArray().put("prompt"))
+                })
+            })
+        }
     ).let { arr ->
         // 外部工具（MCP）追加进来
         if (extra != null) for (i in 0 until extra.length()) arr.put(extra.getJSONObject(i))
