@@ -130,8 +130,12 @@ class EnvStore(ctx: Context) {
  */
 class SkillsStore(private val ctx: Context) {
 
-    /** 技能放手机存储，谁装都是这个目录，自己往里丢就行 */
-    fun dir(): File = File(Environment.getExternalStorageDirectory(), "Minis/skills").apply { mkdirs() }
+    /** 技能放手机存储，谁装都是这个目录，自己往里丢就行（需"所有文件访问"，没有就退回私有目录） */
+    fun dir(): File {
+        val ext = File(Environment.getExternalStorageDirectory(), "Minis/skills")
+        if (Linux.allFiles(ctx) && (ext.isDirectory || ext.mkdirs())) return ext
+        return File(ctx.filesDir, "skills").apply { mkdirs() }
+    }
 
     /** 外部目录优先，读不到再退 App 私有目录（内置示例技能） */
     private fun dirs(): List<File> = listOf(dir(), File(ctx.filesDir, "skills"))
@@ -150,7 +154,15 @@ class SkillsStore(private val ctx: Context) {
     }
 
     fun save(name: String, body: String) {
-        val d = File(dir(), sanitize(name))
+        val base = dir()
+        if (!base.isDirectory || !base.canWrite()) {
+            val alt = File(ctx.filesDir, "skills").apply { mkdirs() }
+            File(File(alt, sanitize(name)), "SKILL.md").let { f ->
+                f.parentFile?.mkdirs(); f.writeText(body)
+            }
+            return
+        }
+        val d = File(base, sanitize(name))
         d.mkdirs()
         File(d, "SKILL.md").writeText(body)
     }

@@ -90,6 +90,7 @@ class MainActivity : Activity() {
         }
         loadUi()
         restoreSession()
+        askAllFilesOnce()
         if (transcript.isEmpty()) {
             appendChat(
                 "提示",
@@ -262,6 +263,25 @@ class MainActivity : Activity() {
                 .setAutoCancel(true)
                 .build())
         }
+    }
+
+    /** 技能目录在 /sdcard/Minis/skills：要"所有文件访问"，没有就问一次 */
+    private fun askAllFilesOnce() {
+        if (Linux.allFiles(this)) return
+        if (getSharedPreferences("aj", MODE_PRIVATE).getBoolean("askedAllFiles", false)) return
+        getSharedPreferences("aj", MODE_PRIVATE).edit().putBoolean("askedAllFiles", true).apply()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("给「所有文件访问」权限")
+            .setMessage("技能目录放在 /sdcard/Minis/skills，别人的技能丢进去就能用；没有这个权限只有 App 自己能看见。\n\n不给也能用，技能会放在 App 私有目录。")
+            .setPositiveButton("去开启") { _, _ ->
+                runCatching {
+                    startActivity(android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        android.net.Uri.parse("package:$packageName")))
+                }
+            }
+            .setNegativeButton("以后", null)
+            .show()
     }
 
     /** 麦克风：系统识别服务转文字，填进输入框 */
@@ -1537,6 +1557,22 @@ class MainActivity : Activity() {
         v.addView(android.widget.Button(this@MainActivity).apply {
             text = "网页子 AJ（局域网浏览器访问）"
             setOnClickListener { showWebAj() }
+        })
+        v.addView(android.widget.Button(this@MainActivity).apply {
+            text = if (Linux.allFiles(this@MainActivity)) "存储权限：已开启（/sdcard/Minis/skills）"
+                   else "存储权限：未开启（技能目录在私有目录）"
+            setOnClickListener {
+                if (Linux.allFiles(this@MainActivity)) {
+                    android.app.AlertDialog.Builder(this@MainActivity).setTitle("已经开了")
+                        .setMessage("技能目录：/sdcard/Minis/skills\n往里丢文件夹，里面放 SKILL.md 就生效。").setPositiveButton("好", null).show()
+                } else {
+                    runCatching {
+                        startActivity(android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            android.net.Uri.parse("package:$packageName")))
+                    }
+                }
+            }
         })
         v.addView(chk("执行命令 / 出图前弹确认卡", { settings.confirmExec }, { settings.confirmExec = it }))
         v.addView(chk("回答自动朗读", { settings.speakReplies }, { settings.speakReplies = it }))

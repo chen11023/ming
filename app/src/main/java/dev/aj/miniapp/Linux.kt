@@ -44,6 +44,10 @@ object Linux {
 
     fun rootDir(ctx: Context): File = File(ctx.filesDir, "rootfs")
 
+    /** 有没有"所有文件访问"：没有就退回 App 私有目录 */
+    fun allFiles(ctx: Context): Boolean =
+        android.os.Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager()
+
     /** python 版本跟着底座走（3.22 是 3.12，3.24 是 3.14），所以不写死 */
     private fun pyBins(root: File): List<File> =
         root.resolve("usr/bin").listFiles()
@@ -302,7 +306,7 @@ object Linux {
         val lib = libDir(ctx)
         val files = ctx.filesDir
 
-        return listOf(
+        val args = mutableListOf(
             prootPath(ctx).absolutePath,
             "--link2symlink",
             "-0",
@@ -319,6 +323,12 @@ object Linux {
             "-w", "/root",
             "/bin/sh", "-c", script
         )
+        // 有"所有文件访问"才把外部存储挂进来，否则 /sdcard 在 proot 里是空的
+        if (allFiles(ctx)) {
+            val at = args.indexOf("-w").let { if (it >= 0) it else args.size }
+            args.addAll(at, listOf("-b", "/storage/emulated/0:/sdcard"))
+        }
+        return args
     }
 
     /**
