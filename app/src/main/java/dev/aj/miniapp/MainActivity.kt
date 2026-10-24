@@ -594,6 +594,46 @@ class MainActivity : Activity() {
             .onFailure { appendChat("错误", "打不开保存对话框：${it.message}", 0xFFDC2626.toInt(), false) }
     }
 
+    /** 网页子 AJ：rootfs 里跑本地服务，同一 WiFi 的电脑/平板用浏览器打开 */
+    private fun showWebAj() {
+        val msg = android.widget.TextView(this).apply {
+            text = "读取中…"
+            setPadding(48, 24, 48, 0)
+            textSize = 13f
+        }
+        val dlg = android.app.AlertDialog.Builder(this)
+            .setTitle("网页子 AJ")
+            .setView(msg)
+            .setPositiveButton("启动", null)
+            .setNeutralButton("换口令", null)
+            .setNegativeButton("停止", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                msg.text = "启动中…（首次解压文件，约十几秒）"
+                thread {
+                    val log = WebAj.start(this)
+                    settings.webOn = true
+                    val txt = log + "\n\n" + WebAj.info(this)
+                    runOnUiThread { msg.text = txt }
+                }
+            }
+            dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                settings.webToken = ""
+                runOnUiThread { msg.text = "口令已换，重新「启动」后生效。\n\n" + WebAj.info(this) }
+            }
+            dlg.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                thread {
+                    WebAj.stop(this)
+                    settings.webOn = false
+                    runOnUiThread { msg.text = "已停。\n\n" + WebAj.info(this) }
+                }
+            }
+        }
+        dlg.show()
+        runOnUiThread { msg.text = WebAj.info(this) }
+    }
+
     /** 入站 SSH：rootfs 里跑 sshd，别人拿地址+密码连进来 */
     private fun showSsh() {
         val msg = android.widget.TextView(this).apply {
@@ -1386,6 +1426,10 @@ class MainActivity : Activity() {
         v.addView(android.widget.Button(this@MainActivity).apply {
             text = "SSH 入口（别人连进这台手机）"
             setOnClickListener { showSsh() }
+        })
+        v.addView(android.widget.Button(this@MainActivity).apply {
+            text = "网页子 AJ（局域网浏览器访问）"
+            setOnClickListener { showWebAj() }
         })
         v.addView(chk("执行命令 / 出图前弹确认卡", { settings.confirmExec }, { settings.confirmExec = it }))
         v.addView(chk("回答自动朗读", { settings.speakReplies }, { settings.speakReplies = it }))

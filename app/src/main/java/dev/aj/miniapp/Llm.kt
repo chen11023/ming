@@ -252,6 +252,27 @@ class Settings(ctx: Context) {
         get() = sp.getString("systemPrompt", DEFAULT_SYSTEM) ?: DEFAULT_SYSTEM
         set(v) = sp.edit().putString("systemPrompt", v).apply()
 
+    /** 网页子 AJ：开关 / 端口 / 访问口令 */
+    var webOn: Boolean
+        get() = sp.getBoolean("webOn", false)
+        set(v) = sp.edit().putBoolean("webOn", v).apply()
+
+    var webPort: Int
+        get() = sp.getInt("webPort", 8787)
+        set(v) = sp.edit().putInt("webPort", v).apply()
+
+    var webToken: String
+        get() {
+            val t = sp.getString("webToken", "") ?: ""
+            if (t.isNotBlank()) return t
+            val n = java.security.SecureRandom()
+            val b = ByteArray(12).also { n.nextBytes(it) }
+            val s2 = b.joinToString("") { String.format("%02x", it) }
+            sp.edit().putString("webToken", s2).apply()
+            return s2
+        }
+        set(v) = sp.edit().putString("webToken", v).apply()
+
     /** 入站 SSH 开关与端口 */
     var sshOn: Boolean
         get() = sp.getBoolean("sshOn", false)
