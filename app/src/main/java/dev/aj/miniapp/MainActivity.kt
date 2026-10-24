@@ -299,12 +299,6 @@ class MainActivity : Activity() {
                 if (settings.speakReplies && lastAnswer.isNotBlank()) speak(lastAnswer)
             }
         })
-        row.addView(android.widget.TextView(this).apply {
-            text = "🎤"
-            textSize = 16f
-            setPadding(6, 10, 12, 10)
-            setOnClickListener { startVoice() }
-        })
         return row
     }
 
@@ -415,6 +409,14 @@ class MainActivity : Activity() {
             b.textSize = 13f
             toolsRow.addView(b)
         }
+        // 麦克风放这里（发送键上方那块空位），不再和朗读挤在模型栏
+        toolsRow.addView(android.view.View(this), android.widget.LinearLayout.LayoutParams(0, 1, 1f))
+        toolsRow.addView(android.widget.TextView(this).apply {
+            text = "🎤"
+            textSize = 17f
+            setPadding(16, 12, 22, 12)
+            setOnClickListener { startVoice() }
+        })
         val inputRow = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER_VERTICAL
@@ -470,6 +472,7 @@ class MainActivity : Activity() {
                 runOnUiThread { appendChat("错误", "附件处理失败: ${e.message}", 0xFFDC2626.toInt()) }
                 emptyList()
             }
+            KeepAlive.start(this)          // 长任务挂前台服务，别被系统回收
             try {
                 agent.send(t.ifBlank { "看看这些附件" }, parts)
             } catch (e: Exception) {
@@ -508,6 +511,7 @@ class MainActivity : Activity() {
                     if (!hasWindowFocus()) notifyDone(ev.text)
                 }
                 is AgentLoop.Event.Stat -> {
+                    KeepAlive.stop(this)
                     settings.usageAdd(ev.calls, ev.chars, ev.ms)
                     settings.usageModelAdd(settings.modelLabel(), ev.calls, ev.chars, ev.ms)
                     if (ev.calls > 0) appendChat(
@@ -517,8 +521,10 @@ class MainActivity : Activity() {
                         0xFF9CA3AF.toInt(), false
                     )
                 }
-                is AgentLoop.Event.Error ->
+                is AgentLoop.Event.Error -> {
+                    KeepAlive.stop(this)
                     appendChat("错误", ev.msg, 0xFFDC2626.toInt())
+                }
             }
         }
     }
@@ -539,6 +545,60 @@ class MainActivity : Activity() {
         }
         runCatching { startActivityForResult(i, EXPORT_CODE) }
             .onFailure { appendChat("错误", "打不开保存对话框：${it.message}", 0xFFDC2626.toInt(), false) }
+    }
+
+    /** 查最新发布，有新版就下载，下完直接弹安装器 */
+    private fun checkUpdate(btn: android.widget.Button) {
+        btn.text = "查…"
+        thread {
+            val rel = Updater.latest()
+            runOnUiThread {
+                btn.text = "检查更新"
+                if (rel == null) {
+                    android.widget.Toast.makeText(this, "没有查到发布版本（还没发过 release，或网络不通）", android.widget.Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                val cur = Updater.current(this)
+                if (rel.number <= cur) {
+                    android.widget.Toast.makeText(this, "已是最新 r$cur", android.widget.Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("发现新版本 r${rel.number}")
+                    .setMessage("当前 r$cur，最新 r${rel.number}（${rel.size / 1048576} MB）\n下载完成后直接弹安装器。")
+                    .setPositiveButton("下载") { _, _ -> downloadUpdate(btn, rel) }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun downloadUpdate(btn: android.widget.Button, rel: Updater.Rel) {
+        btn.text = "0%"
+        thread {
+            val f = java.io.File(filesDir, "update/aj-mini.apk")
+            var lastP = -1
+            val ok = runCatching {
+                Updater.download(rel.url, f) { p ->
+                    if (p / 5 != lastP / 5) {
+                        lastP = p
+                        runOnUiThread { btn.text = "$p%" }
+                    }
+                }
+            }.isSuccess
+            runOnUiThread {
+                btn.text = "检查更新"
+                if (!ok) {
+                    android.widget.Toast.makeText(this, "下载失败", android.widget.Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                runCatching { Updater.install(this, f) }.onFailure {
+                    android.widget.Toast.makeText(
+                        this, "装不了：${it.message}（要在系统设置里允许本应用安装未知来源）", android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
     }
 
     private fun startLogExport() {
@@ -1582,29 +1642,7 @@ class MainActivity : Activity() {
             addView(android.widget.Button(this@MainActivity).apply {
                 text = "检查更新"
                 layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
-                setOnClickListener {
-                    text = "查…"
-                    thread {
-                        val b = Diag.latestRun()
-                        runOnUiThread {
-                            text = "检查更新"
-                            if (b == null) {
-                                android.widget.Toast.makeText(
-                                    this@MainActivity, "查不到（网络或限流）", android.widget.Toast.LENGTH_LONG
-                                ).show()
-                            } else {
-                                verLine.text = "版本 ${Diag.verName(this@MainActivity)} · 最新构建 r${b.number}（${b.at}）"
-                                android.widget.Toast.makeText(
-                                    this@MainActivity, "最新构建 r${b.number}", android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                                runCatching { startActivity(android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(if (b.url.isBlank()) "https://github.com/chen11023/ming/actions" else b.url)
-                                )) }
-                            }
-                        }
-                    }
-                }
+                setOnClickListener { checkUpdate(this) }
             })
         })
 

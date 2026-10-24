@@ -1,5 +1,8 @@
 name: Build APK
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ main ]
@@ -120,6 +123,18 @@ jobs:
             mv "$f" "aj-mini-r${GITHUB_RUN_NUMBER}-${SHORT}.apk"
           done
           ls -la
+
+      - name: Publish release (给 App 内自更新用)
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: r${{ github.run_number }}
+          name: r${{ github.run_number }}
+          body: "自动构建 r${{ github.run_number }} (${{ github.sha }})"
+          files: app/build/outputs/apk/debug/*.apk
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

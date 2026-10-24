@@ -2,4 +2,6 @@
 <paths>
     <files-path name="out" path="out/" />
     <files-path name="inbox" path="inbox/" />
+    <files-path name="update" path="update/" />
+    <files-path name="logs" path="logs/" />
 </paths>
