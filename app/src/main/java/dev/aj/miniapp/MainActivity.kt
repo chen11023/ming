@@ -333,10 +333,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-            }
-            .show()
-    }
-
     private fun buildChatPage(): android.view.View {
         val v = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
