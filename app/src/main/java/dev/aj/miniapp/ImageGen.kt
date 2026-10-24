@@ -25,10 +25,18 @@ object ImageGen {
         .readTimeout(180, TimeUnit.SECONDS)
         .build()
 
-    fun keyOf(env: Map<String, String>): String {
+    /**
+     * 找 key：先看环境变量，再退到「当前模型配置」里的密钥 ——
+     * 只在模型页填了智谱 key 也能直接出图，不用再抄一份到环境变量。
+     */
+    fun keyOf(env: Map<String, String>, baseUrl: String = "", profileKey: String = ""): String {
         for (n in listOf("ZHIPU_API_KEY", "ZHIPU", "ZHIPU_KEY")) {
             val v = env[n]
             if (!v.isNullOrBlank()) return v.trim()
+        }
+        val b = baseUrl.lowercase()
+        if ((b.contains("bigmodel") || b.contains("zhipu")) && profileKey.isNotBlank()) {
+            return profileKey.trim()
         }
         return ""
     }

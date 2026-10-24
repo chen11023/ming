@@ -220,7 +220,7 @@ class AgentLoop(
                             val r = if (prompt.isBlank()) {
                                 "[参数错误] 没有 prompt"
                             } else {
-                                ImageGen.generate(ctx, prompt, ImageGen.keyOf(envStore.asEnv()), size)
+                                ImageGen.generate(ctx, prompt, ImageGen.keyOf(envStore.asEnv(), settings.baseUrl, settings.apiKey), size)
                                     .also { onEvent(Event.Output(it)) }
                             }
                             r
