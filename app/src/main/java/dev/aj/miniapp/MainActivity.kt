@@ -299,19 +299,40 @@ class MainActivity : Activity() {
     }
 
     private fun pickModel() {
-        val ps = settings.profiles()
-        val names = ps.map { "${it.name}（${it.model}）" }.toMutableList()
-        names.add("新增配置 → 去「设置」页")
-        android.app.AlertDialog.Builder(this)
-            .setTitle("选择模型")
-            .setItems(names.toTypedArray()) { _, i ->
-                if (i < ps.size) {
-                    settings.activeIndex = i
-                    modelLabel.text = "模型：${ps[i].name} · ${ps[i].model}"
-                    appendChat("系统", "已切到配置「${ps[i].name}」", 0xFF6B7280.toInt())
-                } else {
-                    android.widget.Toast.makeText(this, "去底部「设置」→ 模型配置", android.widget.Toast.LENGTH_SHORT).show()
+        val ps = settings.providers()
+        if (ps.isEmpty()) {
+            android.widget.Toast.makeText(this, "还没有服务商，去「设置」页加一个", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val items = mutableListOf<String>()
+        val targets = mutableListOf<Pair<Int, String>>()
+        ps.forEachIndexed { i, p ->
+            if (p.models.isEmpty()) {
+                items += "${p.name}（还没加模型）"
+                targets += i to ""
+            } else {
+                p.models.forEach { m ->
+                    items += "${p.name} · $m"
+                    targets += i to m
                 }
+            }
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("选模型")
+            .setItems(items.toTypedArray()) { _, k ->
+                val t = targets[k]
+                if (t.second.isBlank()) {
+                    android.widget.Toast.makeText(this, "去「设置」→ 服务商，给 ${ps[t.first].name} 加模型",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    settings.pickModel(t.first, t.second)
+                    modelLabel.text = "模型：${ps[t.first].name} · ${t.second}"
+                    appendChat("系统", "已切到「${ps[t.first].name} · ${t.second}」", 0xFF6B7280.toInt())
+                }
+            }
+            .show()
+    }
+
             }
             .show()
     }
@@ -840,110 +861,139 @@ class MainActivity : Activity() {
             setPadding(0, 20, 0, 6)
         }
 
-        val baseIn = EditText(this).apply {
-            setText(settings.baseUrl)
-            hint = "https://api.deepseek.com"
-        }
-        val keyIn = EditText(this).apply {
-            setText(settings.apiKey)
-            hint = "sk-..."
-            setSingleLine(true)
-        }
-        val modelIn = EditText(this).apply {
-            setText(settings.model)
-            hint = "deepseek-chat"
+        // ---------------- 服务商（地址 + key）与其下的模型
+        v.addView(label("服务商与模型"))
+        val provBox = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+        val modelBox = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+
+        fun syncBar() {
+            modelLabel.text = "模型：${settings.activeName} · ${settings.model}"
         }
 
-        v.addView(label("接口地址"))
-        v.addView(baseIn)
-        v.addView(label("API Key"))
-        v.addView(keyIn)
-        v.addView(label("模型"))
-        v.addView(modelIn)
-
-        v.addView(android.widget.Button(this).apply {
-            text = "保存"
-            setOnClickListener {
-                settings.baseUrl = baseIn.text.toString()
-                settings.apiKey = keyIn.text.toString()
-                settings.model = modelIn.text.toString()
-                android.widget.Toast.makeText(this@MainActivity, "已保存", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        })
-
-        // ---------------- 多套模型配置（聊天页顶部切换）
-        v.addView(label("模型配置列表（可存多套 key/地址，聊天页顶部点一下切换）"))
-        val profBox = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-        }
-        fun renderProfiles() {
-            profBox.removeAllViews()
-            val list = settings.profiles()
-            if (list.isEmpty()) {
-                profBox.addView(TextView(this).apply {
-                    text = "（还没有，下面加一个）"
+        fun renderProviders() {
+            provBox.removeAllViews()
+            modelBox.removeAllViews()
+            val ps = settings.providers()
+            if (ps.isEmpty()) {
+                provBox.addView(TextView(this).apply {
+                    text = "还没有服务商。在下面加一个：名字 + 接口地址 + key，一次填好。"
                     textSize = 12f
                     setTextColor(0xFF9CA3AF.toInt())
                 })
+                return
             }
-            for ((i, p) in list.withIndex()) {
+            val ai = settings.activeIndex
+            for ((i, p) in ps.withIndex()) {
                 val row = android.widget.LinearLayout(this).apply {
                     orientation = android.widget.LinearLayout.HORIZONTAL
                 }
-                val active = i == settings.activeIndex
+                val dotP = if (i == ai) "●" else "○"
                 row.addView(TextView(this).apply {
-                    text = "${if (active) "● " else "○ "}${p.name}  ${p.model}"
+                    text = "$dotP ${p.name}\n${p.baseUrl}"
                     textSize = 13f
-                    setPadding(0, 12, 0, 12)
+                    setPadding(0, 14, 0, 14)
                     setOnClickListener {
                         settings.activeIndex = i
-                        renderProfiles()
-                        modelLabel.text = "模型：${p.name} · ${p.model}"
+                        settings.activeModelName = p.models.firstOrNull() ?: ""
+                        renderProviders()
+                        syncBar()
                     }
                 }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
                 row.addView(android.widget.Button(this).apply {
                     text = "删"
                     textSize = 12f
                     setOnClickListener {
-                        val now = settings.profiles()
-                        if (i in now.indices) {
-                            now.removeAt(i)
-                            settings.saveProfiles(now)
-                            if (settings.activeIndex >= now.size) settings.activeIndex = 0
-                            renderProfiles()
-                        }
+                        settings.delProvider(i)
+                        renderProviders()
+                        syncBar()
                     }
                 })
-                profBox.addView(row)
+                provBox.addView(row)
+            }
+            val cur = ps.getOrNull(ai) ?: return
+            modelBox.addView(TextView(this).apply {
+                text = "「${cur.name}」下的模型（点一下就切过去）"
+                textSize = 12f
+                setTextColor(0xFF9CA3AF.toInt())
+                setPadding(0, 16, 0, 4)
+            })
+            if (cur.models.isEmpty()) {
+                modelBox.addView(TextView(this).apply {
+                    text = "还没模型，下面加一个"
+                    textSize = 12f
+                    setTextColor(0xFF9CA3AF.toInt())
+                })
+            }
+            for (m in cur.models.toList()) {
+                val row = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                }
+                val dotM = if (m == settings.model) "●" else "○"
+                row.addView(TextView(this).apply {
+                    text = "$dotM $m"
+                    textSize = 13f
+                    setPadding(0, 12, 0, 12)
+                    setOnClickListener {
+                        settings.pickModel(ai, m)
+                        renderProviders()
+                        syncBar()
+                    }
+                }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(android.widget.Button(this).apply {
+                    text = "删"
+                    textSize = 12f
+                    setOnClickListener {
+                        settings.delModel(m)
+                        renderProviders()
+                        syncBar()
+                    }
+                })
+                modelBox.addView(row)
             }
         }
-        renderProfiles()
-        v.addView(profBox)
-        val pn = EditText(this).apply { hint = "配置名，如 智谱" }
-        val pb = EditText(this).apply { hint = "接口地址 https://.../v1" }
-        val pm = EditText(this).apply { hint = "模型名 gpt-4o-mini" }
-        val pk = EditText(this).apply { hint = "API Key" }
-        v.addView(pn)
-        v.addView(pb)
-        v.addView(pm)
-        v.addView(pk)
+        renderProviders()
+        v.addView(provBox)
+        v.addView(modelBox)
+
+        // 给当前服务商加模型：不用再填地址和 key
+        val addModelIn = EditText(this).apply { hint = "模型名，如 glm-4.6" }
+        v.addView(addModelIn)
         v.addView(android.widget.Button(this).apply {
-            text = "新增并启用"
+            text = "加到当前服务商"
             setOnClickListener {
-                val name = pn.text.toString().trim().ifBlank { "配置${settings.profiles().size + 1}" }
-                val url = pb.text.toString().trim().ifBlank { settings.baseUrl }
-                val md = pm.text.toString().trim().ifBlank { settings.model }
-                val k = pk.text.toString().trim()
-                val now = settings.profiles()
-                now.add(Settings.Profile(name, url.trimEnd('/'), md, Vault.encrypt(k)))
-                settings.saveProfiles(now)
-                settings.activeIndex = now.size - 1
-                renderProfiles()
-                modelLabel.text = "模型：$name · $md"
-                pn.setText(""); pb.setText(""); pm.setText(""); pk.setText("")
-                android.widget.Toast.makeText(
-                    this@MainActivity, "已新增并启用「$name」", android.widget.Toast.LENGTH_SHORT
-                ).show()
+                val m = addModelIn.text.toString().trim()
+                if (m.isBlank()) return@setOnClickListener
+                settings.addModel(m)
+                addModelIn.setText("")
+                renderProviders()
+                syncBar()
+            }
+        })
+
+        // 新增服务商
+        v.addView(label("新增服务商（地址和 key 只填这一次）"))
+        val pnIn = EditText(this).apply { hint = "名字，如 智谱" }
+        val pbIn = EditText(this).apply { hint = "接口地址，如 https://open.bigmodel.cn/api/paas/v4" }
+        val pkIn = EditText(this).apply { hint = "API Key"; setSingleLine(true) }
+        v.addView(pnIn)
+        v.addView(pbIn)
+        v.addView(pkIn)
+        v.addView(android.widget.Button(this).apply {
+            text = "新增服务商"
+            setOnClickListener {
+                val name = pnIn.text.toString().trim()
+                val url = pbIn.text.toString().trim()
+                val k = pkIn.text.toString().trim()
+                if (url.isBlank() || k.isBlank()) {
+                    android.widget.Toast.makeText(this, "地址和 key 都要填", android.widget.Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                settings.addProvider(name, url, k)
+                pnIn.setText("")
+                pbIn.setText("")
+                pkIn.setText("")
+                renderProviders()
+                syncBar()
             }
         })
 

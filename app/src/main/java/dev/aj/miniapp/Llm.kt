@@ -61,39 +61,138 @@ class Settings(ctx: Context) {
         get() = sp.getInt("active", 0)
         set(v) = sp.edit().putInt("active", v).apply()
 
-    private fun active(): Profile? {
-        val ps = profiles()
-        val i = activeIndex
-        return if (i in ps.indices) ps[i] else null
+    // ------------------------------------------------ 服务商（地址+key）与其下的模型
+    /** 服务商：一个接口地址 + 一个 key，下面挂多个模型（模型 = 以前的一个"配置"） */
+    data class Provider(
+        val name: String,
+        val baseUrl: String,
+        val keyCipher: String,
+        val models: MutableList<String>
+    ) {
+        val key: String get() = Vault.decrypt(keyCipher)
     }
 
-    /** 改某项时，有配置档就写进当前档，没有就写老字段 */
-    private fun writeActive(field: String, value: String) {
-        val ps = profiles()
-        val i = activeIndex
-        if (i in ps.indices) {
-            val p = ps[i]
-            ps[i] = when (field) {
-                "baseUrl" -> p.copy(baseUrl = value)
-                "model" -> p.copy(model = value)
-                else -> p.copy(keyCipher = value)
+    fun providers(): MutableList<Provider> {
+        val raw = sp.getString("providers", "") ?: ""
+        if (raw.isNotBlank()) {
+            val out = mutableListOf<Provider>()
+            runCatching {
+                val arr = org.json.JSONArray(raw)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val ms = mutableListOf<String>()
+                    o.optJSONArray("models")?.let { a ->
+                        for (k in 0 until a.length()) {
+                            val m = a.optString(k)
+                            if (m.isNotBlank()) ms += m
+                        }
+                    }
+                    out += Provider(
+                        o.optString("name", "服务商$i"),
+                        o.optString("baseUrl", DEFAULT_BASE),
+                        o.optString("key", ""),
+                        ms
+                    )
+                }
             }
-            saveProfiles(ps)
-        } else {
-            sp.edit().putString(field, value).apply()
+            return out
+        }
+        return migrateProfiles()
+    }
+
+    /** 老版本的 profiles：同地址同 key 的合成一个服务商，模型并成列表。只跑一次 */
+    private fun migrateProfiles(): MutableList<Provider> {
+        val out = mutableListOf<Provider>()
+        val ps = profiles()
+        if (ps.isEmpty()) return out
+        val actModel = ps.getOrNull(activeIndex)?.model ?: ""
+        for (p in ps) {
+            val ex = out.firstOrNull { it.baseUrl == p.baseUrl && it.keyCipher == p.keyCipher }
+            if (ex != null) {
+                if (!ex.models.contains(p.model)) ex.models += p.model
+            } else {
+                out += Provider(p.name, p.baseUrl, p.keyCipher, mutableListOf(p.model))
+            }
+        }
+        saveProviders(out)
+        val pi = out.indexOfFirst { it.models.contains(actModel) }.coerceAtLeast(0)
+        sp.edit().putInt("active", pi).putString("activeModel", actModel).apply()
+        return out
+    }
+
+    fun saveProviders(list: List<Provider>) {
+        val arr = org.json.JSONArray()
+        list.forEach { p ->
+            val ms = org.json.JSONArray()
+            p.models.forEach { ms.put(it) }
+            arr.put(JSONObject().apply {
+                put("name", p.name)
+                put("baseUrl", p.baseUrl)
+                put("key", p.keyCipher)
+                put("models", ms)
+            })
+        }
+        sp.edit().putString("providers", arr.toString()).apply()
+    }
+
+    fun currentProvider(): Provider? {
+        val ps = providers()
+        val i = activeIndex
+        return if (i in ps.indices) ps[i] else ps.firstOrNull()
+    }
+
+    /** 当前在用哪个模型名 */
+    var activeModelName: String
+        get() = sp.getString("activeModel", "") ?: ""
+        set(v) = sp.edit().putString("activeModel", v).apply()
+
+    fun pickModel(pi: Int, m: String) {
+        sp.edit().putInt("active", pi).putString("activeModel", m).apply()
+    }
+
+    /** 新增服务商：地址和 key 只填这一次，以后加模型不用再填 */
+    fun addProvider(name: String, url: String, key: String) {
+        val ps = providers()
+        val u = url.trim().trimEnd('/')
+        ps += Provider(
+            name.ifBlank { "服务商${ps.size + 1}" },
+            if (u.isBlank()) DEFAULT_BASE else u,
+            Vault.encrypt(key.trim()),
+            mutableListOf()
+        )
+        saveProviders(ps)
+        sp.edit().putInt("active", ps.size - 1).putString("activeModel", "").apply()
+    }
+
+    fun delProvider(i: Int) {
+        val ps = providers()
+        if (i !in ps.indices) return
+        ps.removeAt(i)
+        saveProviders(ps)
+        if (activeIndex >= ps.size) {
+            sp.edit().putInt("active", (ps.size - 1).coerceAtLeast(0)).apply()
         }
     }
 
-    var baseUrl: String
-        get() = active()?.baseUrl?.takeIf { it.isNotBlank() }
-            ?: (sp.getString("baseUrl", DEFAULT_BASE) ?: DEFAULT_BASE)
-        set(v) = writeActive("baseUrl", v.trim().trimEnd('/'))
+    /** 往当前服务商下加一个模型，并立刻切过去 */
+    fun addModel(m: String) {
+        val ps = providers()
+        val i = activeIndex
+        if (i !in ps.indices || m.isBlank()) return
+        val mm = m.trim()
+        if (!ps[i].models.contains(mm)) ps[i].models += mm
+        saveProviders(ps)
+        activeModelName = mm
+    }
 
-    /** API Key 用 Keystore 加密后落盘（密文前缀 enc1:），磁盘上没有明文 */
-    var apiKey: String
-        get() = active()?.key?.takeIf { it.isNotBlank() }
-            ?: Vault.decrypt(sp.getString("apiKey", "") ?: "")
-        set(v) = writeActive("apiKey", Vault.encrypt(v.trim()))
+    fun delModel(m: String) {
+        val ps = providers()
+        val i = activeIndex
+        if (i !in ps.indices) return
+        ps[i].models.remove(m)
+        saveProviders(ps)
+        if (activeModelName == m) activeModelName = ps[i].models.firstOrNull() ?: ""
+    }
 
     /** 启动时调用一次：把历史版本留下的明文 key 转成密文 */
     fun migratePlaintext() {
@@ -104,14 +203,50 @@ class Settings(ctx: Context) {
         }
     }
 
+    var baseUrl: String
+        get() = currentProvider()?.baseUrl?.takeIf { it.isNotBlank() }
+            ?: (sp.getString("baseUrl", DEFAULT_BASE) ?: DEFAULT_BASE)
+        set(v) {
+            val ps = providers()
+            val i = activeIndex
+            if (i in ps.indices) {
+                ps[i] = ps[i].copy(baseUrl = v.trim().trimEnd('/'))
+                saveProviders(ps)
+            }
+        }
+
+    /** API Key 用 Keystore 加密后落盘（密文前缀 enc1:），磁盘上没有明文 */
+    var apiKey: String
+        get() = currentProvider()?.key?.takeIf { it.isNotBlank() }
+            ?: Vault.decrypt(sp.getString("apiKey", "") ?: "")
+        set(v) {
+            val ps = providers()
+            val i = activeIndex
+            if (i in ps.indices) {
+                ps[i] = ps[i].copy(keyCipher = Vault.encrypt(v.trim()))
+                saveProviders(ps)
+            }
+        }
+
     var model: String
-        get() = active()?.model?.takeIf { it.isNotBlank() }
-            ?: (sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL)
-        set(v) = writeActive("model", v.trim())
+        get() {
+            val p = currentProvider() ?: return sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL
+            val n = activeModelName
+            if (n.isNotBlank() && p.models.contains(n)) return n
+            return p.models.firstOrNull() ?: (sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL)
+        }
+        set(v) {
+            val ps = providers()
+            val i = activeIndex
+            if (i !in ps.indices || v.isBlank()) return
+            if (!ps[i].models.contains(v.trim())) ps[i].models += v.trim()
+            saveProviders(ps)
+            activeModelName = v.trim()
+        }
 
     /** 当前生效配置的名字，用于界面显示 */
     val activeName: String
-        get() = active()?.name ?: "默认"
+        get() = currentProvider()?.name ?: "默认"
 
     var systemPrompt: String
         get() = sp.getString("systemPrompt", DEFAULT_SYSTEM) ?: DEFAULT_SYSTEM
@@ -173,36 +308,69 @@ class Settings(ctx: Context) {
         o.put("speakReplies", speakReplies)
         o.put("notifyDone", notifyDone)
         val arr = org.json.JSONArray()
-        for (p in profiles()) {
+        for (p in providers()) {
+            val ms = org.json.JSONArray()
+            p.models.forEach { ms.put(it) }
             arr.put(org.json.JSONObject().apply {
                 put("name", p.name)
                 put("baseUrl", p.baseUrl)
-                put("model", p.model)
                 put("key", runCatching { p.key }.getOrDefault(""))
+                put("models", ms)
             })
         }
-        o.put("profiles", arr)
+        o.put("providers", arr)
         o.put("active", activeIndex)
+        o.put("activeModel", activeModelName)
         return o.toString(2)
     }
 
     /** 导入：配置档整体替换，其它开关覆盖。返回一句人话 */
     fun importConfig(text: String): String {
         val o = org.json.JSONObject(text)
-        val arr = o.optJSONArray("profiles") ?: org.json.JSONArray()
-        val list = mutableListOf<Profile>()
-        for (i in 0 until arr.length()) {
-            val p = arr.getJSONObject(i)
-            list += Profile(
-                p.optString("name", "配置${i + 1}"),
-                p.optString("baseUrl", DEFAULT_BASE),
-                p.optString("model", DEFAULT_MODEL),
-                Vault.encrypt(p.optString("key", ""))
-            )
-        }
-        if (list.isNotEmpty()) {
-            saveProfiles(list)
-            activeIndex = o.optInt("active", 0).coerceIn(0, list.size - 1)
+        // 新格式：providers（服务商 + 模型列表）；老文件是 profiles，这里一起认
+        val arr = o.optJSONArray("providers")
+        if (arr != null) {
+            val list = mutableListOf<Provider>()
+            for (i in 0 until arr.length()) {
+                val p = arr.getJSONObject(i)
+                val ms = mutableListOf<String>()
+                p.optJSONArray("models")?.let { a ->
+                    for (k in 0 until a.length()) {
+                        val m = a.optString(k)
+                        if (m.isNotBlank()) ms += m
+                    }
+                }
+                list += Provider(
+                    p.optString("name", "服务商${i + 1}"),
+                    p.optString("baseUrl", DEFAULT_BASE),
+                    Vault.encrypt(p.optString("key", "")),
+                    ms
+                )
+            }
+            if (list.isNotEmpty()) {
+                saveProviders(list)
+                sp.edit()
+                    .putInt("active", o.optInt("active", 0).coerceIn(0, list.size - 1))
+                    .putString("activeModel", o.optString("activeModel", ""))
+                    .apply()
+            }
+        } else {
+            val parr = o.optJSONArray("profiles") ?: org.json.JSONArray()
+            val old = mutableListOf<Profile>()
+            for (i in 0 until parr.length()) {
+                val p = parr.getJSONObject(i)
+                old += Profile(
+                    p.optString("name", "配置${i + 1}"),
+                    p.optString("baseUrl", DEFAULT_BASE),
+                    p.optString("model", DEFAULT_MODEL),
+                    Vault.encrypt(p.optString("key", ""))
+                )
+            }
+            if (old.isNotEmpty()) {
+                saveProfiles(old)
+                sp.edit().remove("providers").apply()
+                activeIndex = o.optInt("active", 0).coerceIn(0, old.size - 1)
+            }
         }
         if (o.has("systemPrompt")) systemPrompt = o.optString("systemPrompt", DEFAULT_SYSTEM)
         if (o.has("maxTurns")) maxTurns = o.optInt("maxTurns", maxTurns)
@@ -211,7 +379,7 @@ class Settings(ctx: Context) {
         speakReplies = o.optBoolean("speakReplies", speakReplies)
         notifyDone = o.optBoolean("notifyDone", notifyDone)
         if (o.has("chatFont")) chatFont = o.optDouble("chatFont", 15.0).toFloat()
-        return "导入 ${list.size} 个配置档"
+        return "导入 ${providers().size} 个服务商"
     }
 
     /** 工具循环最多跑几轮，防止模型死循环 */
