@@ -260,6 +260,17 @@ object Linux {
         }
     }
 
+    /**
+     * rootfs 里没有 tzdata，写 "Asia/Shanghai" 这种名字 musl 找不到会退回 UTC。
+     * 用 POSIX 写法 "XXX-8:00" 才不依赖时区文件，任何发行版都认。
+     */
+    private fun posixTz(): String {
+        val off = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000
+        val sign = if (off >= 0) "-" else "+"
+        val a = kotlin.math.abs(off)
+        return "XXX" + sign + (a / 60) + ":" + String.format("%02d", a % 60)
+    }
+
     fun prootCommand(ctx: Context, script: String): List<String> {
         val root = rootDir(ctx)
         // 聊天里跑的命令和终端走同一套环境，DNS 也要在
@@ -313,6 +324,7 @@ object Linux {
                 "HOME" to "/root",
                 "TERM" to "xterm",
                 "LANG" to "C.UTF-8",
+                "TZ" to posixTz(),
                 "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath
             )
             // 默认值只在用户没给时补上；PATH 必须有，否则 proot 里连 sh 都找不到
@@ -346,6 +358,7 @@ object Linux {
             "HOME" to "/root",
             "TERM" to "xterm",
             "LANG" to "C.UTF-8",
+            "TZ" to posixTz(),
             "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath
         )
         defEnv.forEach { (k, v) -> pb.environment()[k] = v }
@@ -367,6 +380,7 @@ object Linux {
                 "HOME" to "/root",
                 "TERM" to "xterm",
                 "LANG" to "C.UTF-8",
+                "TZ" to posixTz(),
                 "PROOT_TMP_DIR" to ctx.cacheDir.absolutePath
             )
             defEnvS.forEach { (k, v) -> if (!env.containsKey(k)) pb.environment()[k] = v }
