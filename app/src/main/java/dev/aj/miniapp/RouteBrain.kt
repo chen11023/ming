@@ -99,7 +99,8 @@ object RouteBrain {
         // 只有明确「模型不存在」才判死；单纯一个 404（接口路径/网关）不算，
         // 否则同账号能用的服务商会被整条锁死（2026-10-24 实测踩过）
         if (listOf("no such model", "model_not_found", "invalid model", "model not found",
-                "模型不存在", "does not exist").any { s.contains(it) }) return "dead"
+                "模型不存在", "does not exist", "supported api model names", "supported model",
+                "not supported").any { s.contains(it) }) return "dead"
         if (listOf("not found", "404", "不存在").any { s.contains(it) }) return "limited"
         return "unknown"
     }
@@ -125,6 +126,14 @@ object RouteBrain {
     }
 
     /** 真实调用失败 → 累加连败数、按次数抬冷却（404 直接躺 2 小时） */
+    /** 把服务商的长报错压成一句能看懂的话（尤其「模型名不支持」会把支持列表带回来） */
+    private fun tidy(err: String): String {
+        val s = err.replace("\n", " ").replace("\r", " ").trim()
+        val i = s.indexOf("supported API model names", ignoreCase = true)
+        if (i >= 0) return "模型名不被支持 →" + s.substring(i).take(110)
+        return s.take(160)
+    }
+
     fun markFail(st: Settings, name: String, base: String, err: String) {
         runCatching {
             val list = entries(st).filter { it.name == name && (base.isBlank() || it.base == base) }
@@ -140,7 +149,7 @@ object RouteBrain {
                 r.put("fails", fails)
                 r.put("failAt", now)
                 r.put("coolUntil", now + cool)
-                r.put("lastErr", err.take(160))
+                r.put("lastErr", tidy(err))
                 r.put("tier", e.tier)
                 r.put("name", e.name)
                 h.put(hkey(e), r)
@@ -169,7 +178,7 @@ object RouteBrain {
                 val f = r.optInt("fails", 0)
                 if (f > 0) append(" 连败$f")
                 val le = r.optString("lastErr", "").replace("\n", " ").trim()
-                if (le.isNotEmpty()) append(" ｜ ").append(le.take(70))
+                if (le.isNotEmpty()) append(" ｜ ").append(le.take(110))
             }
             "$icon [${e.tier}] ${e.name}  $s$extra"
         }

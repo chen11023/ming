@@ -83,9 +83,10 @@ object Sshd {
             mkdir -p /root/.ssh /var/run/sshd /run/sshd
             chmod 700 /root/.ssh
             [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A >/dev/null 2>&1
-            echo "root:${p}" | chpasswd
+            [ -f /etc/passwd- ] || cp -p /etc/passwd /etc/passwd- 2>/dev/null || true
+            echo "root:${p}" | chpasswd 2>/dev/null || true
             printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' 'PermitEmptyPasswords no' 'UsePAM no' > /etc/ssh/sshd_config.d/aj.conf 2>/dev/null || true
-            grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config 2>/dev/null || printf '%s\n' 'Include /etc/ssh/sshd_config.d/*.conf' | cat - /etc/ssh/sshd_config > /tmp/_sshcfg && mv /tmp/_sshcfg /etc/ssh/sshd_config
+            if ! grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config 2>/dev/null; then { printf '%s\n' 'Include /etc/ssh/sshd_config.d/*.conf'; cat /etc/ssh/sshd_config; } > /tmp/_sshcfg; mv /tmp/_sshcfg /etc/ssh/sshd_config; fi
             echo ok
         """.trimIndent()
         val (code, out) = Linux.run(ctx, script, timeoutSec = 300)
