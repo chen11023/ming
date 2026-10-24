@@ -222,7 +222,7 @@ class ChatBubbles(private val ctx: Context, private val onLongPress: (String, St
             textSize = 10.5f
             setTextColor(color)
             letterSpacing = 0.08f
-            setPadding(4, 0, 4, ctx.dp(2))
+            setPadding(4, 0, 4, ctx.dp(2f))
             gravity = if (tag == "你" || tag == "我") Gravity.END else Gravity.START
         }, LinearLayout.LayoutParams(-1, -2))
         holder.addView(tv, LinearLayout.LayoutParams(
