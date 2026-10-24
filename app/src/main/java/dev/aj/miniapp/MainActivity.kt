@@ -397,7 +397,12 @@ class MainActivity : Activity() {
             text = "☰"
             setOnClickListener { showSessions() }
         }
+        val msgBtn = android.widget.Button(this).apply {
+            text = "⋯"
+            setOnClickListener { showMessages() }
+        }
         row.addView(historyBtn)
+        row.addView(msgBtn)
         row.addView(attachBtn)
         row.addView(chatInput, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(chatStop)
@@ -655,31 +660,171 @@ class MainActivity : Activity() {
         appendChat("提示", "新会话开始（$id）。点「☰」可切回以前的会话。", 0xFF6B7280.toInt())
     }
 
-    /** 会话列表：点一下切换，长按「删除当前」 */
+    /** 会话列表：可搜索（标题或内容），点一行切换 */
     private fun showSessions() {
         val dir = java.io.File(filesDir, "sessions")
         val ids = (dir.list() ?: emptyArray())
             .filter { it.endsWith(".json") }
             .map { it.removeSuffix(".json") }
-            .filter { it != curSession || java.io.File(dir, "$it.json").length() > 2 }
             .sortedByDescending { java.io.File(dir, "$it.json").lastModified() }
         if (ids.isEmpty()) {
             appendChat("提示", "还没有历史会话。", 0xFF6B7280.toInt())
             return
         }
+        data class SR(val id: String, val time: String, val title: String, val n: Int)
         val sdf = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
-        val items = ids.map { id ->
+        val rows = ids.map { id ->
             val f = java.io.File(dir, "$id.json")
             val n = runCatching { org.json.JSONArray(f.readText()).length() }.getOrDefault(0)
-            val mark = if (id == curSession) "▶ " else ""
-            "$mark${sdf.format(java.util.Date(f.lastModified()))}  ${sessionTitle(f)}  (${n}条)"
-        }.toTypedArray()
-        android.app.AlertDialog.Builder(this)
-            .setTitle("历史会话（点一行切换）")
-            .setItems(items) { _, i -> switchSession(ids[i]) }
+            SR(id, sdf.format(java.util.Date(f.lastModified())), sessionTitle(f), n)
+        }
+
+        val input = EditText(this).apply {
+            hint = "搜标题或聊天内容，空=全部"
+            setSingleLine(true)
+        }
+        val list = android.widget.ListView(this)
+        val adapter = android.widget.ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
+        list.adapter = adapter
+        val shown = mutableListOf<String>()
+
+        fun refresh(kw: String) {
+            adapter.clear()
+            shown.clear()
+            for (r in rows) {
+                var hit = kw.isBlank() || r.title.contains(kw, true) || r.id.contains(kw, true)
+                if (!hit && kw.isNotBlank()) {
+                    hit = runCatching {
+                        java.io.File(dir, "${r.id}.txt").readText().contains(kw, true)
+                    }.getOrDefault(false)
+                }
+                if (!hit) continue
+                val mark = if (r.id == curSession) "▶ " else ""
+                adapter.add("$mark${r.time}  ${r.title}  (${r.n}条)")
+                shown.add(r.id)
+            }
+            adapter.notifyDataSetChanged()
+        }
+        refresh("")
+        input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                runCatching { refresh(s?.toString() ?: "") }
+            }
+        })
+
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(36, 12, 36, 0)
+            addView(input)
+            addView(list, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
+        }
+        val dlg = android.app.AlertDialog.Builder(this)
+            .setTitle("历史会话")
+            .setView(box)
             .setNeutralButton("删除当前") { _, _ -> deleteCurrentSession() }
             .setNegativeButton("取消", null)
+            .create()
+        list.setOnItemClickListener { _, _, i, _ ->
+            val id = shown.getOrNull(i) ?: return@setOnItemClickListener
+            dlg.dismiss()
+            switchSession(id)
+        }
+        dlg.show()
+    }
+
+    private data class Block(val tag: String, val body: String, val start: Int, val end: Int)
+
+    /** 把 transcript 切成一条条消息（格式：[tag] body，块间空行） */
+    private fun parseBlocks(): MutableList<Block> {
+        val t = transcript.toString()
+        val out = mutableListOf<Block>()
+        val re = Regex("(?:^|\\n\\n)\\[([^\\]]{1,16})\\] ")
+        var lastTag = ""
+        var bodyStart = -1
+        var startPos = -1
+        for (m in re.findAll(t)) {
+            if (bodyStart >= 0) out += Block(lastTag, t.substring(bodyStart, m.range.first), startPos, m.range.first)
+            lastTag = m.groupValues[1]
+            bodyStart = m.range.last + 1
+            startPos = m.range.first
+            if (t.startsWith("\n\n", startPos)) startPos += 2
+        }
+        if (bodyStart in 0..t.length) out += Block(lastTag, t.substring(bodyStart), startPos, t.length)
+        return out
+    }
+
+    private fun deleteBlock(b: Block) {
+        val t = transcript.toString()
+        var e = b.end
+        if (t.startsWith("\n\n", e)) e += 2
+        if (b.start in 0..e) runCatching { transcript.delete(b.start, e) }
+    }
+
+    /** 消息列表：点一条看操作（复制 / 填入输入框 / 删掉） */
+    private fun showMessages() {
+        val blocks = parseBlocks()
+        if (blocks.isEmpty()) {
+            appendChat("提示", "当前会话还没有消息。", 0xFF6B7280.toInt())
+            return
+        }
+        val from = (blocks.size - 80).coerceAtLeast(0)
+        val view = blocks.subList(from, blocks.size).toList()
+        val items = view.map { b ->
+            val who = if (b.tag == "你" || b.tag == "用户") "你" else b.tag
+            "${who}｜" + b.body.replace("\n", " ").take(40)
+        }.toTypedArray()
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("消息（点一条操作）")
+            .setItems(items) { _, i -> messageActions(view[i]) }
+            .setNegativeButton("关闭", null)
             .show()
+    }
+
+    private fun messageActions(b: Block) {
+        val isUser = b.tag == "你" || b.tag == "用户"
+        val opts = arrayListOf("复制")
+        if (isUser) {
+            opts += "填入输入框（重发前可改）"
+            opts += "编辑（填进输入框并删除原消息）"
+        }
+        opts += "删除这条（只删显示，模型历史不动）"
+        android.app.AlertDialog.Builder(this)
+            .setTitle(b.body.replace("\n", " ").take(30))
+            .setItems(opts.toTypedArray()) { _, i ->
+                val action = opts[i]
+                when {
+                    action == "复制" -> copyText(b.body)
+                    action.startsWith("填入") -> {
+                        chatInput.setText(b.body)
+                        chatInput.setSelection(chatInput.text.length)
+                    }
+                    action.startsWith("编辑") -> {
+                        chatInput.setText(b.body)
+                        chatInput.setSelection(chatInput.text.length)
+                        deleteBlock(b)
+                        saveTranscript()
+                        renderAll()
+                    }
+                    else -> {
+                        deleteBlock(b)
+                        saveTranscript()
+                        renderAll()
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun copyText(t: String) {
+        runCatching {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("AJ", t))
+            android.widget.Toast.makeText(this, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** 从会话文件里抠出标题：第一条用户消息的前 26 个字 */
