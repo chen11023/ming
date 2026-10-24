@@ -839,6 +839,49 @@ def ensure_broker():
     return "broker 起来了但没读到 key"
 
 
+def _kill_stale():
+    """上一次的 server.py 没退干净时把端口占着，这里按 /proc 找同类进程杀掉（不碰自己）。"""
+    me = os.getpid()
+    killed = []
+    try:
+        for d in os.listdir("/proc"):
+            if not d.isdigit() or int(d) == me:
+                continue
+            try:
+                with io.open("/proc/%s/cmdline" % d, "rb") as f:
+                    raw = f.read().decode("utf-8", "replace")
+            except Exception:
+                continue
+            parts = [x for x in raw.split("\x00") if x]
+            if not any("server.py" in x for x in parts):
+                continue
+            if HERE not in raw:
+                continue
+            try:
+                os.kill(int(d), 9)
+                killed.append(d)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return killed
+
+def _bind_srv():
+    """绑定端口；被占用时清一次残留再重试，最多 10 秒，失败写清原因。"""
+    last = None
+    for i in range(10):
+        try:
+            s = ThreadingHTTPServer((HOST, PORT), H)
+            s.daemon_threads = True
+            return s
+        except OSError as e:
+            last = e
+            if i == 0:
+                k = _kill_stale()
+                print("端口 %d 被占，已清残留 %s" % (PORT, k or "无"), flush=True)
+            time.sleep(1.0)
+    raise last
+
 if __name__ == "__main__":
     try:
         open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.pid"), "w").write(str(os.getpid()))
@@ -848,8 +891,11 @@ if __name__ == "__main__":
     print("AJ web  http://%s:%d/?k=%s" % (HOST, PORT, TOKEN), flush=True)
     print("家目录 %s ｜ broker %s ｜ 页面 %s" % (A.AGENTD, A.BROKER, _HTML_PATH), flush=True)
     print("broker: %s" % ensure_broker(), flush=True)
-    srv = ThreadingHTTPServer((HOST, PORT), H)
-    srv.daemon_threads = True
+    try:
+        srv = _bind_srv()
+    except OSError as e:
+        print("端口 %d 绑不上：%s（另一个进程还占着，先点「停止」再「启动」）" % (PORT, e), flush=True)
+        sys.exit(2)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

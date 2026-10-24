@@ -62,6 +62,13 @@ class MainActivity : Activity() {
         envStore = EnvStore(this)
         mcp = McpManager(this)
         runCatching { Sched.arm(this) }
+        // 上次开着网页子 AJ：重开 App 时把守护进程接上，掉线它自己会拉
+        runCatching {
+            if (settings.webOn) {
+                KeepAlive.start(this)
+                thread { runCatching { if (!WebAj.running(this)) WebAj.start(this) } }
+            }
+        }
         agent = AgentLoop(this, settings, envStore) { ev -> onAgentEvent(ev) }
         agent.onConfirm = { what -> askConfirm(what) }
         agent.onAsk = { q -> askUserInline(q) }

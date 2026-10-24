@@ -109,6 +109,7 @@ object WebAj {
     /** 后台跑起来：目标进程常驻，线程一直挂着直到被杀 */
     fun start(ctx: Context): String {
         absorbReport(ctx)
+        cleanup(ctx)
         val e = ensure(ctx)
         if (e != "ok") return "启动失败：$e"
         val w = writeEnv(ctx)
@@ -121,6 +122,21 @@ object WebAj {
         }.apply { isDaemon = true; name = "ajweb" }.start()
         KeepAlive.start(ctx)
         return "已启动（等十几秒再刷新网页）"
+    }
+
+    /** 清掉上一次残留的进程（按 pid 文件精确杀，再看端口是否还占着） */
+    fun cleanup(ctx: Context) {
+        runCatching {
+            Linux.run(
+                ctx,
+                "cd /host/web 2>/dev/null || exit 0; " +
+                    "for f in server.pid broker.pid; do " +
+                    "if [ -f \"\$f\" ]; then kill \"\$(cat \"\$f\")\" 2>/dev/null; rm -f \"\$f\"; fi; " +
+                    "done; " +
+                    "sleep 1; true",
+                20
+            )
+        }
     }
 
     /** 状态 + 地址 + 口令 */
@@ -195,8 +211,11 @@ object WebAj {
     }
 
     fun running(ctx: Context): Boolean {
-        val (_, out) = Linux.run(ctx, "ps aux | grep -c '[s]erver.py' || true", 15)
-        return (out.trim().toIntOrNull() ?: 0) > 0
+        // 实测端口是否真的能连（ps 里有进程不代表它在应答）
+        return runCatching {
+            java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", Settings(ctx).webPort), 1200) }
+            true
+        }.getOrDefault(false)
     }
 
 }

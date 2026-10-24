@@ -20,6 +20,8 @@ object KeepAlive {
     }
 
     fun stop(ctx: Context) {
+        // 网页子 AJ 还开着就不收服务：它同时是掉线自动拉起的守护
+        if (runCatching { Settings(ctx).webOn }.getOrDefault(false)) return
         if (!running) return
         running = false
         runCatching { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) }
@@ -47,11 +49,29 @@ class KeepAliveService : Service() {
             .setOngoing(true)
             .build()
         startForeground(1201, n)
+        startWatch()
         lock = runCatching {
             (getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "aj:task")
                 .apply { acquire(60L * 60 * 1000) }
         }.getOrNull()
+    }
+
+    private var wd: Thread? = null
+
+    /** 每 45 秒看一眼网页子 AJ：开了却没应答就重新拉起 */
+    private fun startWatch() {
+        if (wd != null) return
+        wd = Thread {
+            while (!isInterrupted) {
+                runCatching {
+                    val ctx = applicationContext
+                    if (Settings(ctx).webOn && !WebAj.running(ctx)) WebAj.start(ctx)
+                }
+                try { Thread.sleep(45_000) } catch (e: InterruptedException) { return@Thread }
+            }
+        }.apply { isDaemon = true; name = "ajweb-watch" }
+        wd!!.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
