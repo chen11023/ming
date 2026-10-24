@@ -13,7 +13,7 @@ import java.net.NetworkInterface
  */
 object WebAj {
 
-    private val ASSETS = listOf("ajweb/broker.py", "ajweb/server.py", "ajweb/index.html")
+    private val ASSETS = listOf("ajweb/agent.py", "ajweb/broker.py", "ajweb/server.py", "ajweb/index.html")
 
     fun dir(ctx: Context) = File(ctx.filesDir, "web").apply { mkdirs() }
 
@@ -114,8 +114,8 @@ object WebAj {
         val w = writeEnv(ctx)
         if (w != "ok") return "启动失败：$w"
         Settings(ctx).webOn = true
-        val cmd = "cd /host/web && (python3 broker.py >/host/web/broker.log 2>&1 &) ; " +
-            "exec python3 server.py"
+        val cmd = "cd /host/web && (python3 broker.py > broker.log 2>&1 &) ; " +
+            "exec python3 server.py > server.log 2>&1"
         Thread {
             runCatching { Linux.run(ctx, cmd, 86400) }
         }.apply { isDaemon = true; name = "ajweb" }.start()
@@ -129,6 +129,10 @@ object WebAj {
         val st = Settings(ctx)
         val up = runCatching { running(ctx) }.getOrDefault(false)
         val sb = StringBuilder()
+        val tail = runCatching {
+            val f = File(dir(ctx), "server.log")
+            if (f.exists()) f.readLines().takeLast(6).joinToString("\n") else ""
+        }.getOrDefault("")
         sb.append("状态：").append(if (up) "运行中" else "未运行").append('\n')
         sb.append("端口：").append(st.webPort).append('\n')
         sb.append("口令：").append(st.webToken).append('\n')
@@ -142,6 +146,7 @@ object WebAj {
         } else {
             sb.append("\n点「启动」后这里给出地址。")
         }
+        if (tail.isNotBlank()) sb.append("\n最近日志：\n").append(tail).append('\n')
         return sb.toString()
     }
 
