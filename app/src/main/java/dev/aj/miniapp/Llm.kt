@@ -553,7 +553,11 @@ class LlmClient(private val settings: Settings) {
             val p = settings.currentProvider()
             return listOf(RouteBrain.Entry(cur, "free", p?.name ?: "", settings.baseUrl, settings.apiKey))
         }
-        return c
+        // 用户手点了哪个模型就先走哪个（沙箱没有"手选"概念，这里必须补：
+        // 否则同档里名字靠前的模型一直 ok，用户选的永远轮不到）
+        val sel = c.firstOrNull { it.name == cur }
+        if (sel == null) return c
+        return listOf(sel) + c.filter { it !== sel }
     }
 
     /** 401/403 是 key 或权限问题，换模型也没用，别再白试 */

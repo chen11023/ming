@@ -29,18 +29,29 @@ object RouteBrain {
 
     /** 任务偏好：命中的关键词 → 优先挑名字里带这些片段的模型（只在同档同健康度内前移） */
     private val PREFS: List<Pair<String, List<String>>> = listOf(
-        "画图" to listOf("__MEDIA__"), "生图" to listOf("__MEDIA__"), "插图" to listOf("__MEDIA__"),
-        "写代码" to listOf("deepseek", "code", "coder"),
-        "代码" to listOf("deepseek", "code", "coder"),
-        "脚本" to listOf("deepseek", "code", "coder"),
-        "排障" to listOf("deepseek", "reasoner"),
-        "推理" to listOf("reasoner", "r1", "thinking", "v4-pro", "pro"),
-        "长文" to listOf("pro", "large", "122b", "397b"),
-        "看图" to listOf("v-flash", "vl", "vision"),
-        "视觉" to listOf("v-flash", "vl", "vision"),
-        "翻译" to listOf("flash", "qwen", "glm"),
-        "标题" to listOf("flash"),
-        "文案" to listOf("flash")
+        "写代码" to listOf("deepseek-flash", "deepseek-v4-flash", "v4-1-flash", "deepseek-v4-pro"),
+        "编码" to listOf("deepseek-flash", "deepseek-v4-flash", "v4-1-flash", "deepseek-v4-pro"),
+        "脚本" to listOf("deepseek-flash", "deepseek-v4-flash", "v4-1-flash", "deepseek-v4-pro"),
+        "排障" to listOf("deepseek-flash", "deepseek-v4-flash", "v4-1-flash", "deepseek-v4-pro"),
+        "改配方" to listOf("deepseek-flash", "deepseek-v4-flash", "v4-1-flash", "deepseek-v4-pro"),
+        "合同" to listOf("deepseek-v4-pro", "deepseek-flash"),
+        "审查" to listOf("deepseek-v4-pro", "deepseek-flash"),
+        "阅读" to listOf("deepseek-v4-pro", "deepseek-flash"),
+        "精读" to listOf("deepseek-v4-pro", "deepseek-flash"),
+        "批判" to listOf("deepseek-v4-pro", "deepseek-flash"),
+        "标题" to listOf("glm-4.7-flash"),
+        "文案" to listOf("glm-4.7-flash"),
+        "小红书" to listOf("glm-4.7-flash"),
+        "公众号" to listOf("glm-4.7-flash"),
+        "写手" to listOf("glm-4.7-flash"),
+        "小说" to listOf("glm-4.7-flash", "scnet-max", "GLM-5.2"),
+        "网文" to listOf("glm-4.7-flash", "scnet-max", "GLM-5.2"),
+        "长文" to listOf("glm-4.7-flash", "GLM-5.2", "scnet-max"),
+        "续写" to listOf("glm-4.7-flash", "scnet-max"),
+        "看图" to listOf("glm-4.6v-flash", "glm-4v-flash", "glm-4.1v-thinking-flash"),
+        "视觉" to listOf("glm-4.6v-flash", "glm-4v-flash", "glm-4.1v-thinking-flash"),
+        "图片" to listOf("glm-4.6v-flash", "glm-4v-flash", "glm-4.1v-thinking-flash"),
+        "画图" to listOf("__MEDIA__"), "生图" to listOf("__MEDIA__"), "插图" to listOf("__MEDIA__")
     )
 
     /** 每轮任务文本，由 AgentLoop 在 send() 开头设置，只用于排序偏好 */
@@ -77,10 +88,10 @@ object RouteBrain {
         runCatching { st.setRouteHealthRaw(o.toString()) }
     }
 
-    private fun hkey(e: Entry) = "${e.tier}/${e.name}"
+    private fun hkey(e: Entry) = "${e.role}|${e.name}"   // 沙箱用 entry_id，这里用 服务商|模型
 
     private fun rec(h: JSONObject, e: Entry): JSONObject =
-        runCatching { h.optJSONObject(hkey(e)) ?: JSONObject() }.getOrDefault(JSONObject())
+        runCatching { h.optJSONObject(hkey(e)) ?: h.optJSONObject("${e.tier}/${e.name}") ?: JSONObject() }.getOrDefault(JSONObject())
 
     private fun status(r: JSONObject) = r.optString("status", "unknown").ifBlank { "unknown" }
 
@@ -186,6 +197,11 @@ object RouteBrain {
 
     // ---------------------------------------------------------------- 排序
 
+    private fun matchPref(e: Entry, kw: String): Boolean {
+        val k = kw.lowercase()
+        return k in e.name.lowercase() || k in e.role.lowercase()
+    }
+
     private fun isMedia(n: String): Boolean {
         val l = n.lowercase()
         return MEDIA.any { l.contains(it) }
@@ -203,6 +219,8 @@ object RouteBrain {
      * 清单为空 / 任何异常 → 返回空列表，调用方自己回退到当前模型。
      */
     fun chain(st: Settings, taskText: String = task, limit: Int = 6): List<Entry> {
+        // 照沙箱 model-brain.py rank()：排序键只有 (档位, 健康, 任务偏好, 名字)，
+        // 不用"模型在清单里排第几" —— 那会把用户选中的模型永久压在后面。
         return runCatching {
             val es = entries(st)
             if (es.isEmpty()) return emptyList<Entry>()
@@ -210,35 +228,33 @@ object RouteBrain {
             val mediaTask = prefs == listOf("__MEDIA__")
             val h = load(st)
             val now = System.currentTimeMillis()
-            val rows = ArrayList<Triple<Int, Long, Entry>>()
-            es.forEachIndexed { i, e ->
+            data class Row(val t: Int, val s: Int, val p: Int, val name: String, val e: Entry)
+            val rows = ArrayList<Row>()
+            es.forEach { e ->
                 val media = isMedia(e.name)
-                if (mediaTask && !media) return@forEachIndexed
-                if (media && !mediaTask) return@forEachIndexed
+                if (mediaTask && !media) return@forEach
+                if (media && !mediaTask) return@forEach
                 val r = rec(h, e)
-                val s = status(r)
+                val st0 = status(r)
                 val cool = (r.optLong("coolUntil", 0L) - now).coerceAtLeast(0L)
-                var health = when (s) {
+                val s = when (st0) {
                     "ok" -> 0
-                    "limited", "unknown" -> 2
+                    "limited", "invisible", "timeout", "unknown" -> if (cool > 0) 2 else (if (st0 == "limited" || st0 == "invisible") 1 else 2)
                     "dead" -> 3
                     else -> 2
                 }
-                if (cool > 0 && s != "dead") health = 3
-                var tierRank = if (e.tier == "free") 0 else 1
-                if (s == "dead") tierRank += 2        // 死掉的免费模型排到付费后面
-                var pref = 99
-                if (mediaTask) pref = 0
+                var t = if (e.tier == "free") 0 else 1
+                if (st0 == "dead") t += 2          // 死掉的免费排到付费后面
+                var pp = 99
+                if (mediaTask) pp = 0
                 else if (prefs != null) {
-                    val pi = prefs.indexOfFirst { e.name.lowercase().contains(it) }
-                    if (pi >= 0) pref = if (health == 0) pi else pi + 10
+                    val pi = prefs.indexOfFirst { matchPref(e, it) }
+                    if (pi >= 0) pp = if (s == 0) pi else pi + 10
                 }
-                // 打包成一个可排序的整数：档位 * 100000 + 健康 * 10000 + 偏好 * 100 + 清单位次
-                val sortKey = tierRank * 100000 + health * 10000 + pref * 100 + i.coerceAtMost(99)
-                rows += Triple(sortKey, now - i, e)
+                rows += Row(t, s, pp, e.name, e)
             }
-            rows.sortBy { it.first }
-            rows.map { it.third }.take(limit)
+            rows.sortWith(compareBy({ it.t }, { it.s }, { it.p }, { it.name }))
+            rows.map { it.e }.take(limit)
         }.getOrDefault(emptyList())
     }
 }
