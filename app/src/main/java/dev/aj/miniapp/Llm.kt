@@ -318,6 +318,16 @@ class Settings(ctx: Context) {
         get() = sp.getFloat("chatFont", 15f)
         set(v) = sp.edit().putFloat("chatFont", v.coerceIn(11f, 26f)).apply()
 
+    /** 聊天区背景图（本地文件绝对路径，空=不用） */
+    var chatBg: String
+        get() = sp.getString("chatBg", "") ?: ""
+        set(v) = sp.edit().putString("chatBg", v).apply()
+
+    /** 背景图透明度 0.05~0.6 */
+    var chatBgAlpha: Float
+        get() = sp.getFloat("chatBgAlpha", 0.22f)
+        set(v) = sp.edit().putFloat("chatBgAlpha", v.coerceIn(0.05f, 0.6f)).apply()
+
     /** 回答自动朗读 */
     var speakReplies: Boolean
         get() = sp.getBoolean("speak", false)
@@ -337,12 +347,51 @@ class Settings(ctx: Context) {
             .apply()
     }
 
+    /** token 记账（服务商回传就记真值，不回传的按字数估，界面上标"估"） */
+    fun usageTokAdd(model: String, prompt: Int, completion: Int) {
+        if (prompt <= 0 && completion <= 0) return
+        sp.edit()
+            .putLong("u.ptok", sp.getLong("u.ptok", 0L) + prompt)
+            .putLong("u.ctok", sp.getLong("u.ctok", 0L) + completion)
+            .apply()
+        if (model.isBlank()) return
+        val all = runCatching { org.json.JSONObject(sp.getString("u.byModel", "{}")) }
+            .getOrElse { org.json.JSONObject() }
+        val label = if (model.contains(" · ")) model else modelLabel().replace(activeModelName, model)
+        for (k in linkedSetOf(model, label)) {
+            val one = all.optJSONObject(k) ?: org.json.JSONObject()
+            one.put("pt", one.optLong("pt") + prompt)
+            one.put("ct", one.optLong("ct") + completion)
+            all.put(k, one)
+        }
+        sp.edit().putString("u.byModel", all.toString()).apply()
+    }
+
+    /** 某个模型单独用了多少 token（输入、输出）；标签可能是「服务商 · 模型」也可能是裸模型名 */
+    fun usageModelTok(label: String): Pair<Long, Long> {
+        val all = runCatching { org.json.JSONObject(sp.getString("u.byModel", "{}")) }
+            .getOrElse { org.json.JSONObject() }
+        all.optJSONObject(label)?.let { return it.optLong("pt") to it.optLong("ct") }
+        val short = label.substringAfterLast(" · ")
+        for (k in all.keys()) {
+            if (k == short || k.substringAfterLast(" · ") == short) {
+                val o = all.optJSONObject(k) ?: continue
+                return o.optLong("pt") to o.optLong("ct")
+            }
+        }
+        return 0L to 0L
+    }
+
+    val usagePromptTok: Long get() = sp.getLong("u.ptok", 0L)
+    val usageCompletionTok: Long get() = sp.getLong("u.ctok", 0L)
+
     val usageCalls: Int get() = sp.getInt("u.calls", 0)
     val usageChars: Long get() = sp.getLong("u.chars", 0L)
     val usageMs: Long get() = sp.getLong("u.ms", 0L)
 
     fun usageReset() {
         sp.edit().remove("u.calls").remove("u.chars").remove("u.ms")
+            .remove("u.ptok").remove("u.ctok")
             .remove("u.byModel").apply()
     }
 
@@ -516,7 +565,9 @@ class LlmClient(private val settings: Settings) {
     data class Reply(
         val text: String?,
         val toolCalls: List<ToolCall>,
-        val error: String? = null
+        val error: String? = null,
+        val ptok: Int = 0,
+        val ctok: Int = 0
     ) {
         val hasTool: Boolean get() = toolCalls.isNotEmpty()
     }
@@ -583,6 +634,7 @@ class LlmClient(private val settings: Settings) {
                 val err = last.error
                 if (err == null) {
                     lastUsedModel = e.name
+                    settings.usageTokAdd(e.name, last.ptok, last.ctok)
                     RouteBrain.markOk(settings, e.name, e.base)
                     return last
                 }
@@ -656,6 +708,7 @@ class LlmClient(private val settings: Settings) {
                 val err = last.error
                 if (err == null) {
                     lastUsedModel = e.name
+                    settings.usageTokAdd(e.name, last.ptok, last.ctok)
                     RouteBrain.markOk(settings, e.name, e.base)
                     return last
                 }
@@ -724,6 +777,8 @@ class LlmClient(private val settings: Settings) {
 
                 val text = StringBuilder()
                 val slots = linkedMapOf<Int, Array<StringBuilder>>()
+                var seenPt = 0
+                var seenCt = 0
                 while (true) {
                     if (cancelled) break
                     val line = src.readUtf8Line() ?: break
@@ -731,6 +786,11 @@ class LlmClient(private val settings: Settings) {
                     val data = line.removePrefix("data:").trim()
                     if (data == "[DONE]") break
                     val o = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                    val u = o.optJSONObject("usage")
+                    if (u != null) {
+                        seenPt = u.optInt("prompt_tokens", seenPt)
+                        seenCt = u.optInt("completion_tokens", seenCt)
+                    }
                     val ch = o.optJSONArray("choices") ?: continue
                     if (ch.length() == 0) continue
                     val delta = ch.getJSONObject(0).optJSONObject("delta") ?: continue
@@ -766,8 +826,10 @@ class LlmClient(private val settings: Settings) {
                     )
                 }.filter { it.name.isNotBlank() }
 
-                if (cancelled) return Reply(text.toString().ifBlank { null }, calls, "已停止")
-                Reply(text.toString().ifBlank { null }, calls)
+                val pt = seenPt
+                val ct = if (seenCt > 0) seenCt else text.length
+                if (cancelled) return Reply(text.toString().ifBlank { null }, calls, "已停止", pt, ct)
+                Reply(text.toString().ifBlank { null }, calls, null, pt, ct)
             }
         } catch (e: Exception) {
             Reply(null, emptyList(), if (cancelled) "已停止" else "${e.javaClass.simpleName}: ${e.message}")
@@ -795,7 +857,9 @@ class LlmClient(private val settings: Settings) {
 
     private fun parse(raw: String): Reply {
         return try {
-            val choice = JSONObject(raw).getJSONArray("choices").getJSONObject(0)
+            val whole = JSONObject(raw)
+            val usage = whole.optJSONObject("usage")
+            val choice = whole.getJSONArray("choices").getJSONObject(0)
             val msg = choice.getJSONObject("message")
             val text = if (msg.has("content") && !msg.isNull("content"))
                 msg.getString("content") else null

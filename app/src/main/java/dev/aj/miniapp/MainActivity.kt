@@ -15,7 +15,9 @@ class MainActivity : Activity() {
     private lateinit var agent: AgentLoop
     private var term: TermuxTerm? = null
 
-    private lateinit var chatView: TextView
+    private lateinit var bubbles: ChatBubbles
+    private lateinit var chatBg: android.widget.ImageView
+    private lateinit var chatFrame: android.widget.FrameLayout
     private lateinit var chatScroll: android.widget.ScrollView
     private lateinit var outBox: LinearLayout
     private val outputs by lazy { Outputs(this) }
@@ -87,6 +89,12 @@ class MainActivity : Activity() {
             tts = android.speech.tts.TextToSpeech(this) { st ->
                 if (st != android.speech.tts.TextToSpeech.SUCCESS) tts = null
             }
+            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(id: String?) { speaking = true }
+                override fun onDone(id: String?) { speaking = false }
+                @Deprecated("旧接口，必须实现")
+                override fun onError(id: String?) { speaking = false }
+            })
         }
         loadUi()
         restoreSession()
@@ -106,15 +114,18 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ 三页签
 
     private fun loadUi() {
+        Palette.dark = settings.dark
         val root = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setBackgroundColor(0xFFF7F7F8.toInt())
+            setBackgroundColor(Palette.bg())
         }
 
         rootView = root
 
         val tabs = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
+            setBackgroundColor(Palette.card())
+            setPadding(dp(8), dp(6), dp(8), dp(6))
         }
         val content = android.widget.FrameLayout(this)
         contentBox = content
@@ -125,9 +136,12 @@ class MainActivity : Activity() {
         val setPage = buildSettingsPage()
 
         val btns = listOf("聊天", "终端", "设置").map { name ->
-            android.widget.Button(this).apply {
+            android.widget.TextView(this).apply {
                 text = name
-                setOnClickListener { }
+                textSize = 15f
+                gravity = android.view.Gravity.CENTER
+                setPadding(0, dp(10), 0, dp(10))
+                tag = "keepColor"
             }
         }
 
@@ -148,7 +162,12 @@ class MainActivity : Activity() {
                 content.addView(pages[i])
             }
             btns.forEachIndexed { idx, b ->
-                b.setTextColor(if (idx == i) 0xFF2563EB.toInt() else 0xFF6B7280.toInt())
+                b.setTextColor(if (idx == i) Palette.accent() else Palette.sub())
+                b.setTypeface(
+                    null,
+                    if (idx == i) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
+                )
+                b.background = if (idx == i) roundBg(this@MainActivity, Palette.accentSoft(), 12f) else null
             }
         }
         btns.forEachIndexed { i, b -> b.setOnClickListener { select(i) } }
@@ -160,6 +179,63 @@ class MainActivity : Activity() {
         applyTheme()
     }
 
+    /** 统一给按钮/输入框上色，别让它们都是系统灰 */
+    private fun skin(view: android.view.View) {
+        when (view) {
+            is android.widget.Button -> {
+                view.backgroundTintList = android.content.res.ColorStateList.valueOf(Palette.cardAlt())
+                view.setTextColor(Palette.text())
+                view.textSize = 14f
+                view.isAllCaps = false
+                view.minHeight = dp(42)
+                view.stateListAnimator = null
+            }
+            is android.widget.EditText -> {
+                view.backgroundTintList = android.content.res.ColorStateList.valueOf(Palette.line())
+                view.setTextColor(Palette.text())
+                view.setHintTextColor(Palette.sub())
+            }
+            is android.widget.TextView -> {
+                if (view.tag != "jkLabel" && view.tag != "keepColor") view.setTextColor(Palette.text())
+            }
+        }
+        if (view is android.view.ViewGroup) {
+            for (i in 0 until view.childCount) skin(view.getChildAt(i))
+        }
+    }
+
+    /** 设置页：把「灰标签 + 一堆控件」重新排成一张一张的卡片（QQ 那种分组） */
+    private fun restyleSections(root: LinearLayout) {
+        val kids = (0 until root.childCount).map { root.getChildAt(it) }
+        root.removeAllViews()
+        var cur: LinearLayout? = null
+        fun newCard() = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundBg(this@MainActivity, Palette.card(), 16f, Palette.line())
+            setPadding(dp(14), dp(4), dp(14), dp(12))
+        }
+        for (k in kids) {
+            if (k is android.widget.TextView && k.tag == "jkLabel") {
+                val card = newCard()
+                card.addView(android.widget.TextView(this).apply {
+                    text = k.text
+                    textSize = 14f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setTextColor(Palette.accent())
+                    setPadding(0, dp(10), 0, dp(4))
+                })
+                val lp = LinearLayout.LayoutParams(-1, -2)
+                lp.setMargins(0, dp(10), 0, 0)
+                root.addView(card, lp)
+                cur = card
+            } else if (cur != null) {
+                cur!!.addView(k)
+            } else {
+                root.addView(k)
+            }
+        }
+    }
+
     /** 深色 / 字号，改完立刻生效 */
     private fun applyTheme() {
         val dark = settings.dark
@@ -168,9 +244,10 @@ class MainActivity : Activity() {
         runCatching {
             rootView.setBackgroundColor(bg)
             chatPageView.setBackgroundColor(bg)
-            chatView.setBackgroundColor(bg)
-            chatView.setTextColor(fg)
-            chatView.textSize = settings.chatFont
+            Palette.dark = settings.dark
+            root.setBackgroundColor(Palette.bg())
+            bubbles.setFontSize(settings.chatFont)
+            loadChatBg()
             chatInput.setTextColor(fg)
         }
         runCatching { renderAll() }
@@ -232,12 +309,28 @@ class MainActivity : Activity() {
     }
 
     /** 朗读、通知：完成时用 */
+    private var speaking = false
+
     private fun speak(text: String) {
         val t = tts ?: return
         runCatching {
             t.setLanguage(java.util.Locale.CHINA)
             t.speak(text.take(600), android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "aj")
+            speaking = true
         }
+    }
+
+    /** 念到一半想停就停 */
+    private fun stopSpeak() {
+        runCatching { tts?.stop() }
+        speaking = false
+    }
+
+    private fun toggleSpeak() {
+        if (speaking) { stopSpeak(); android.widget.Toast.makeText(this, "停了", android.widget.Toast.LENGTH_SHORT).show(); return }
+        val last = lastAnswer
+        if (last.isBlank()) { android.widget.Toast.makeText(this, "还没有可念的内容", android.widget.Toast.LENGTH_SHORT).show(); return }
+        speak(last)
     }
 
     private fun notifyDone(text: String) {
@@ -282,6 +375,80 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("以后", null)
             .show()
+    }
+
+    /** 长按气泡：复制 / 删除这条 / 引用 */
+    private fun bubbleMenu(tag: String, body: String) {
+        val items = arrayOf("复制这条", "引用到输入框", "删除这条")
+        android.app.AlertDialog.Builder(this)
+            .setTitle(if (tag.isBlank()) "这条消息" else "[$tag]")
+            .setItems(items) { _, i ->
+                when (i) {
+                    0 -> {
+                        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("aj", body))
+                        android.widget.Toast.makeText(this, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> { chatInput.setText(quote(body)); chatInput.setSelection(chatInput.text.length) }
+                    2 -> deleteBlock(tag, body)
+                }
+            }.show()
+    }
+
+    private fun quote(body: String): String {
+        val q = body.trim().lines().take(8).joinToString("\n") { "> $it" }
+        return q + "\n\n"
+    }
+
+    /** 从记录里挖掉一条；记录和界面一起更新 */
+    private fun deleteBlock(tag: String, body: String) {
+        val b = parseBlocks().lastOrNull { it.body.trim() == body.trim() && (tag.isBlank() || it.tag == tag) }
+            ?: parseBlocks().lastOrNull { it.body.trim().startsWith(body.trim().take(40)) }
+        if (b == null) {
+            android.widget.Toast.makeText(this, "这条已经找不到了", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        deleteBlock(b)
+        saveTranscript()
+        renderAll()
+    }
+
+    /** 背景图：选一张存到私有目录，随时能换回来 */
+    private fun pickChatBg() {
+        val it = android.content.Intent(android.content.Intent.ACTION_GET_CONTENT)
+        it.type = "image/*"
+        runCatching { startActivityForResult(it, 3031) }
+    }
+
+    /** 长按聊天框：换背景 / 浓淡 / 去掉 */
+    private fun bgMenu() {
+        val items = arrayOf("选一张图片当背景", "背景淡一点", "背景浓一点", "去掉背景")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("聊天背景")
+            .setItems(items) { _, i ->
+                when (i) {
+                    0 -> pickChatBg()
+                    1 -> { settings.chatBgAlpha = settings.chatBgAlpha - 0.08f; loadChatBg() }
+                    2 -> { settings.chatBgAlpha = settings.chatBgAlpha + 0.08f; loadChatBg() }
+                    3 -> {
+                        settings.chatBg = ""
+                        runCatching { java.io.File(filesDir, "chatbg.img").delete() }
+                        loadChatBg()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun loadChatBg() {
+        if (!::chatBg.isInitialized) return
+        val p = settings.chatBg
+        if (p.isBlank() || !java.io.File(p).exists()) { chatBg.visibility = android.view.View.GONE; return }
+        runCatching {
+            chatBg.setImageBitmap(android.graphics.BitmapFactory.decodeFile(p))
+            chatBg.setImageAlpha((settings.chatBgAlpha * 255).toInt())
+            chatBg.visibility = android.view.View.VISIBLE
+        }.onFailure { chatBg.visibility = android.view.View.GONE }
     }
 
     /** 麦克风：系统识别服务转文字，填进输入框 */
@@ -360,17 +527,26 @@ class MainActivity : Activity() {
             setOnClickListener { pickModel() }
         }
         row.addView(modelLabel, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(android.widget.TextView(this).apply {
+        val speakBtn = android.widget.TextView(this).apply {
             text = "🔊"
+            tag = "keepColor"
             textSize = 16f
             setPadding(18, 10, 18, 10)
-            setTextColor(if (settings.speakReplies) 0xFF2563EB.toInt() else 0xFF9CA3AF.toInt())
+            setTextColor(if (settings.speakReplies) Palette.accent() else Palette.sub())
             setOnClickListener {
-                settings.speakReplies = !settings.speakReplies
-                setTextColor(if (settings.speakReplies) 0xFF2563EB.toInt() else 0xFF9CA3AF.toInt())
-                if (settings.speakReplies && lastAnswer.isNotBlank()) speak(lastAnswer)
+                settings.speakReplies = true
+                setTextColor(Palette.accent())
+                toggleSpeak()
             }
-        })
+            setOnLongClickListener {
+                stopSpeak()
+                settings.speakReplies = false
+                setTextColor(Palette.sub())
+                android.widget.Toast.makeText(this@MainActivity, "自动朗读已关闭（长按关的）", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+        row.addView(speakBtn)
         return row
     }
 
@@ -416,22 +592,37 @@ class MainActivity : Activity() {
         }
 
         val scroll = android.widget.ScrollView(this)
-        chatView = TextView(this).apply {
-            textSize = 15f
-            setTextIsSelectable(true)
-            setPadding(0, 0, 0, 24)
-            setTextColor(0xFF111827.toInt())
+        chatBg = android.widget.ImageView(this).apply {
+            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            setImageAlpha((settings.chatBgAlpha * 255).toInt())
+            visibility = android.view.View.GONE
         }
+        bubbles = ChatBubbles(this) { tag, body -> bubbleMenu(tag, body) }
         outBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val chatCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(chatView)
+            addView(bubbles.box)
             addView(outBox)
         }
         scroll.addView(chatCol)
+        scroll.setBackgroundColor(android.graphics.Color.TRANSPARENT)
         chatScroll = scroll
+        val stack = android.widget.FrameLayout(this).apply {
+            addView(chatBg, android.widget.FrameLayout.LayoutParams(-1, -1))
+            addView(scroll, android.widget.FrameLayout.LayoutParams(-1, -1))
+        }
+        chatFrame = android.widget.FrameLayout(this).apply {
+            background = roundBg(this@MainActivity, Palette.card(), 20f, Palette.line())
+            addView(stack)
+            setOnLongClickListener {
+                bgMenu()
+                true
+            }
+        }
         v.addView(modelBar(), android.widget.LinearLayout.LayoutParams(-1, -2))
-        v.addView(scroll, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
+        val lpFrame = android.widget.LinearLayout.LayoutParams(-1, 0, 1f)
+        lpFrame.setMargins(dp(10), dp(2), dp(10), dp(6))
+        v.addView(chatFrame, lpFrame)
 
         chatInput = EditText(this).apply {
             hint = "要它做什么…"
@@ -499,6 +690,7 @@ class MainActivity : Activity() {
         inputRow.addView(chatSend)
         v.addView(toolsRow)
         v.addView(inputRow)
+        skin(v)
         return v
     }
 
@@ -635,7 +827,10 @@ class MainActivity : Activity() {
                     if (ev.calls > 0) appendChat(
                         "统计",
                         "${ev.calls} 次模型调用 · ${String.format("%.1f", ev.chars / 10000.0)} 万字符 · " +
-                            "${String.format("%.1f", ev.ms / 1000.0)}s",
+                            "${String.format("%.1f", ev.ms / 1000.0)}s" +
+                            if (settings.usagePromptTok + settings.usageCompletionTok > 0)
+                                " · 累计 tokens 入 ${w(settings.usagePromptTok)} / 出 ${w(settings.usageCompletionTok)}"
+                            else "",
                         0xFF9CA3AF.toInt(), false
                     )
                 }
@@ -886,6 +1081,29 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK || data == null) return
 
+        if (requestCode == 3031) {
+            val uri = data.data ?: return
+            Thread {
+                runCatching {
+                    val f = java.io.File(filesDir, "chatbg.img")
+                    contentResolver.openInputStream(uri)!!.use { i ->
+                        f.outputStream().use { o -> i.copyTo(o) }
+                    }
+                    settings.chatBg = f.absolutePath
+                }.onSuccess {
+                    runOnUiThread {
+                        loadChatBg()
+                        android.widget.Toast.makeText(this, "背景换好了", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }.onFailure { e ->
+                    runOnUiThread {
+                        android.widget.Toast.makeText(this, "图片读不了：${e.message}",
+                            android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
+            return
+        }
         if (requestCode == EXPORT_CODE) {
             val uri = data.data ?: return
             runCatching {
@@ -950,14 +1168,26 @@ class MainActivity : Activity() {
         val list = settings.usageModels()
         if (list.isEmpty()) return "（还没有按模型的数据）"
         return list.take(6).joinToString("\n") { (label, calls, chars) ->
-            "· $label：$calls 次 / ${String.format("%.1f", chars / 10000.0)} 万字符"
+            val (pt, ct) = settings.usageModelTok(label)
+            val tok = if (pt + ct > 0) " / 入 ${w(pt)} 出 ${w(ct)} tokens" else ""
+            "· $label：$calls 次 / ${String.format("%.1f", chars / 10000.0)} 万字符$tok"
         } + if (list.size > 6) "\n· 还有 ${list.size - 6} 个" else ""
     }
 
     private fun usageLine(): String {
         val ms = settings.usageMs
-        return "${settings.usageCalls} 次调用 · ${String.format("%.1f", settings.usageChars / 10000.0)} 万字符 · " +
+        val pt = settings.usagePromptTok
+        val ct = settings.usageCompletionTok
+        val tok = if (pt + ct > 0) " · tokens 入 ${w(pt)} / 出 ${w(ct)}" else ""
+        return "${settings.usageCalls} 次调用 · ${String.format("%.1f", settings.usageChars / 10000.0)} 万字符$tok · " +
             "累计 ${ms / 60000} 分 ${(ms % 60000) / 1000} 秒"
+    }
+
+    /** token 数太长了，w/亿 简写 */
+    private fun w(n: Long): String = when {
+        n >= 100_000_000L -> String.format("%.2f 亿", n / 100_000_000.0)
+        n >= 10_000L -> String.format("%.1f 万", n / 10000.0)
+        else -> "$n"
     }
 
     private fun kb(n: Long): String = when {
@@ -1003,7 +1233,7 @@ class MainActivity : Activity() {
         allowAllThisSession = false
         transcript.setLength(0)
         streamBuf.setLength(0)
-        chatView.text = ""
+        bubbles.clear()
         outBox.removeAllViews()
         pending.clear()
         attachBtn.text = "📎"
@@ -1080,6 +1310,22 @@ class MainActivity : Activity() {
             val id = shown.getOrNull(i) ?: return@setOnItemClickListener
             dlg.dismiss()
             switchSession(id)
+        }
+        list.setOnItemLongClickListener { _, _, i, _ ->
+            val id = shown.getOrNull(i) ?: return@setOnItemLongClickListener true
+            android.app.AlertDialog.Builder(this)
+                .setMessage("删掉会话 $id ？连同记录一起没。")
+                .setPositiveButton("删") { _, _ ->
+                    runCatching {
+                        sessionFile("$id.txt").delete()
+                        sessionFile("$id.json").delete()
+                    }
+                    dlg.dismiss()
+                    if (id == curSession) newSession() else showSessions()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+            true
         }
         dlg.show()
     }
@@ -1205,7 +1451,7 @@ class MainActivity : Activity() {
         allowAllThisSession = false
         transcript.setLength(0)
         streamBuf.setLength(0)
-        chatView.text = ""
+        bubbles.clear()
         outBox.removeAllViews()
         runCatching {
             val f = sessionFile("$id.txt")
@@ -1246,7 +1492,7 @@ class MainActivity : Activity() {
     private fun scheduleStreamRender() {
         if (streamPending) return
         streamPending = true
-        chatView.postDelayed({
+        chatScroll.postDelayed({
             streamPending = false
             renderAll()
         }, 120)
@@ -1261,7 +1507,7 @@ class MainActivity : Activity() {
         }
         val text = sb.toString()
         val shown = if (text.length > 400000) text.takeLast(400000) else text
-        chatView.text = Markdown.render(shown)
+        bubbles.render(shown)
         chatScroll.post { chatScroll.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 
@@ -1301,6 +1547,7 @@ class MainActivity : Activity() {
         v.addView(termStatus)
         v.addView(bar)
         v.addView(termHost, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
+        skin(v)
         return v
     }
 
@@ -1514,6 +1761,23 @@ class MainActivity : Activity() {
             addView(android.widget.Button(this@MainActivity).apply {
                 text = "A+"
                 setOnClickListener { settings.chatFont = settings.chatFont + 1f; applyTheme() }
+            })
+        })
+        v.addView(android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "换聊天背景图"
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+                setOnClickListener { pickChatBg() }
+            })
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "去掉背景"
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+                setOnClickListener {
+                    settings.chatBg = ""
+                    runCatching { java.io.File(filesDir, "chatbg.img").delete() }
+                    loadChatBg()
+                }
             })
         })
         v.addView(chk("路由大脑：主模型挂了自动换（含别的服务商，按健康度排）", { settings.autoFallback }, { settings.autoFallback = it }))
@@ -1949,12 +2213,15 @@ class MainActivity : Activity() {
             menu.addView(TextView(this).apply {
                 text = "▸  $title"
                 textSize = 15f
-                setPadding(30, 28, 30, 28)
-                setTextColor(if (settings.dark) 0xFFE5E7EB.toInt() else 0xFF111827.toInt())
-                setBackgroundColor(if (settings.dark) 0xFF1F2937.toInt() else 0xFFF3F4F6.toInt())
+                setPadding(dp(18), dp(18), dp(18), dp(18))
+                setTextColor(Palette.text())
+                background = roundBg(this@MainActivity, Palette.card(), 16f, Palette.line())
                 setOnClickListener {
                     views.forEach { (it.parent as? android.view.ViewGroup)?.removeView(it) }
                     openSubPage(title, views)
+                }
+                layoutParams = android.widget.LinearLayout.LayoutParams(-1, -2).apply {
+                    setMargins(0, dp(8), 0, 0)
                 }
             })
         }
@@ -1976,16 +2243,24 @@ class MainActivity : Activity() {
         bar.addView(TextView(this).apply {
             text = title
             textSize = 15f
+            setTextColor(Palette.text())
             setPadding(16, 0, 0, 0)
         })
         val body = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(24, 6, 24, 28)
         }
+        val card = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            background = roundBg(this@MainActivity, Palette.card(), 16f, Palette.line())
+            setPadding(dp(14), dp(6), dp(14), dp(14))
+        }
         for (v in views) {
             (v.parent as? android.view.ViewGroup)?.removeView(v)
-            body.addView(v)
+            card.addView(v)
         }
+        body.addView(card, android.widget.LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(6), 0, 0) })
+        skin(card)
         val page = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             addView(bar)
