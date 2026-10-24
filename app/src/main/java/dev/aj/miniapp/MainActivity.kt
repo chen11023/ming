@@ -259,13 +259,46 @@ class MainActivity : Activity() {
     private fun askConfirm(what: String): Boolean {
         if (!settings.confirmExec || allowAllThisSession) return true
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return true
+        // 把「执行命令：<一大串>」拆成人话：标题是动作，下面才是原文
+        val act = what.substringBefore('：', what).trim().ifBlank { "一个动作" }
+        val detail = what.substringAfter('：', what).trim()
+        val tip = when {
+            act.contains("命令") -> "在手机里跑一段 shell 命令。它会真的读写文件、起停进程。"
+            act.contains("写") -> "要往手机里写文件，写下去就改掉了原来的内容。"
+            act.contains("图") -> "要调画图模型，这一步是花钱的。"
+            act.contains("网页") -> "要打开一个网页并把内容抓回来（请求会发到外面）。"
+            act.contains("提醒") -> "要在手机上建一个提醒。"
+            act.contains("子代理") -> "要派一个子代理接着干，会多花几轮模型调用。"
+            act.contains("删除") -> "要删东西，删了不能恢复。"
+            else -> "模型要执行一个操作，看完再决定。"
+        }
+        val body = if (detail.length > 800) detail.take(800) + "\n…（后面还有 ${detail.length - 800} 字）" else detail
         val latch = java.util.concurrent.CountDownLatch(1)
         var yes = false
         runOnUiThread {
+            val box = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(48, 24, 48, 8)
+            }
+            box.addView(android.widget.TextView(this).apply {
+                text = tip
+                textSize = 15f
+                setTextColor(Palette.text())
+            })
+            if (body.isNotBlank()) {
+                box.addView(android.widget.TextView(this).apply {
+                    text = body
+                    textSize = 12.5f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTextColor(Palette.sub())
+                    setTextIsSelectable(true)
+                    setPadding(0, dp(12), 0, 0)
+                })
+            }
             val d = android.app.AlertDialog.Builder(this)
-                .setTitle("要动手了")
-                .setMessage(what.take(900))
-                .setPositiveButton("允许") { _, _ -> yes = true; latch.countDown() }
+                .setTitle("确认：$act")
+                .setView(android.widget.ScrollView(this).apply { addView(box) })
+                .setPositiveButton("允许这一次") { _, _ -> yes = true; latch.countDown() }
                 .setNeutralButton("本次全允许") { _, _ ->
                     allowAllThisSession = true; yes = true; latch.countDown()
                 }
@@ -888,6 +921,21 @@ class MainActivity : Activity() {
             )
             addView(pub)
             addView(msg)
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "复制地址（含口令）"
+                setOnClickListener {
+                    val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    val a = WebAj.addr(this@MainActivity)
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("aj", a))
+                    android.widget.Toast.makeText(this@MainActivity, "已复制\n$a",
+                        android.widget.Toast.LENGTH_LONG).show()
+                }
+            }, android.widget.LinearLayout.LayoutParams(-1, -2).apply { setMargins(24, 12, 24, 0) })
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "刷新地址（换网后点我）"
+                setOnClickListener { msg.text = WebAj.info(this@MainActivity) }
+            }, android.widget.LinearLayout.LayoutParams(-1, -2).apply { setMargins(24, 6, 24, 0) })
         }
         val dlg = android.app.AlertDialog.Builder(this)
             .setTitle("网页子 AJ")
@@ -931,6 +979,7 @@ class MainActivity : Activity() {
             text = "读取中…"
             setPadding(48, 24, 48, 0)
             textSize = 13f
+            setTextIsSelectable(true)   // 长按就能选中复制
         }
         val dlg = android.app.AlertDialog.Builder(this)
             .setTitle("SSH 入口")

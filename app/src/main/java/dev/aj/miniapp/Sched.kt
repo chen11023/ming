@@ -211,5 +211,14 @@ class BootReceiver : android.content.BroadcastReceiver() {
         runCatching {
             if (Settings(app).sshOn) Thread { runCatching { Sshd.start(app) } }.start()
         }
+        // 开机后网页子 AJ 也要自己回来
+        runCatching {
+            if (Settings(app).webOn) {
+                KeepAlive.start(app)
+                Thread {
+                    runCatching { if (!WebAj.running(app)) WebAj.start(app) }
+                }.start()
+            }
+        }
     }
 }

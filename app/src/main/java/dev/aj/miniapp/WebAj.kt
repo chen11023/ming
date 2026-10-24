@@ -141,6 +141,25 @@ object WebAj {
     }
 
     /** 状态 + 地址 + 口令 */
+    /** broker（127.0.0.1:8788）还活着吗 */
+    fun brokerAlive(): Boolean = runCatching {
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 8788), 1500) }
+        true
+    }.getOrDefault(false)
+
+    /** 只重启 broker，不动 server，网页那头连接不断 */
+    @Synchronized
+    fun restartBroker(ctx: Context): String {
+        // 按 cmdline 找 broker.py 的进程杀掉（broker.pid 未必存在）
+        runCatching {
+            Linux.run(ctx, "for d in /proc/[0-9]*; do " +
+                "c=\$(tr '\\0' ' ' < \$d/cmdline 2>/dev/null); " +
+                "case \"\$c\" in *broker.py*) kill \${d#/proc/} 2>/dev/null ;; esac; done; true", 25)
+        }
+        runCatching { Linux.run(ctx, "cd /host/web && (python3 broker.py > broker.log 2>&1 &) ; true", 25) }
+        return if (brokerAlive()) "broker 已重启" else "broker 重启失败"
+    }
+
     fun info(ctx: Context): String {
         absorbReport(ctx)
         val st = Settings(ctx)

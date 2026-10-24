@@ -59,17 +59,36 @@ class KeepAliveService : Service() {
 
     private var wd: Thread? = null
 
-    /** 每 45 秒看一眼网页子 AJ：开了却没应答就重新拉起 */
+    /** 每 20 秒看一眼网页子 AJ：server 掉了整条拉起，只有 broker 掉了单独拉 */
     private fun startWatch() {
         if (wd != null) return
         val t = Thread {
+            var fails = 0
             while (!Thread.currentThread().isInterrupted) {
                 runCatching {
                     val ctx = applicationContext
-                    if (Settings(ctx).webOn && !WebAj.running(ctx)) WebAj.start(ctx)
+                    if (Settings(ctx).webOn) {
+                        val srv = WebAj.running(ctx)
+                        val brk = if (srv) WebAj.brokerAlive() else false
+                        when {
+                            !srv -> {
+                                fails++
+                                // 连续两次探不到才重启，避免网络抖动时把好进程杀掉
+                                if (fails >= 2) {
+                                    WebAj.start(ctx)
+                                    fails = 0
+                                }
+                            }
+                            !brk -> {
+                                WebAj.restartBroker(ctx)
+                                fails = 0
+                            }
+                            else -> fails = 0
+                        }
+                    }
                 }
                 try {
-                    Thread.sleep(45_000)
+                    Thread.sleep(20_000)
                 } catch (e: InterruptedException) {
                     return@Thread
                 }
@@ -81,7 +100,8 @@ class KeepAliveService : Service() {
         t.start()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    // 被系统杀掉后请它自己回来（网页子 AJ 靠这个续命）
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
         runCatching { lock?.release() }
