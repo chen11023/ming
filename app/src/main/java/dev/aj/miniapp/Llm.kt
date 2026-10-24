@@ -204,11 +204,28 @@ class LlmClient(private val settings: Settings) {
      * 流式版本：边收边把增量文字吐给 onDelta，tool_calls 按 index 拼完再返回。
      * 服务端不认 stream 时自动退回普通响应。
      */
+    private fun profileKey(): String {
+        val p = active()
+        return "noStream:" + (p?.baseUrl ?: "") + "|" + (p?.model ?: "")
+    }
+
+    private fun noStreamFor(): Boolean = sp.getBoolean(profileKey(), false)
+
+    private fun markNoStream() {
+        sp.edit().putBoolean(profileKey(), true).apply()
+    }
+
     fun chatStream(
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
         onDelta: (String) -> Unit
     ): Reply {
+        // 有的模型（智谱部分型号）不认 stream:true，记住一次，以后这套配置直接整段返回
+        if (noStreamFor()) {
+            val r = chat(history, extraTools)
+            r.text?.let { onDelta(it) }
+            return r
+        }
         if (!settings.configured) {
             return Reply(null, emptyList(), "还没填 API key，去设置页填一下")
         }
@@ -234,6 +251,12 @@ class LlmClient(private val settings: Settings) {
             c.execute().use { resp ->
                 if (!resp.isSuccessful) {
                     val raw = resp.body?.string().orEmpty()
+                    if (resp.code == 400 && (raw.contains("1212") || raw.contains("SSE"))) {
+                        markNoStream()
+                        val r = chat(history, extraTools)
+                        r.text?.let { onDelta(it) }
+                        return r
+                    }
                     return Reply(null, emptyList(), "HTTP ${resp.code}: ${raw.take(400)}")
                 }
                 val ct = resp.header("Content-Type").orEmpty()
