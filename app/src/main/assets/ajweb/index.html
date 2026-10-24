@@ -1,77 +1,331 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>AJ</title>
-<style>
-  :root{--bg:#0f1115;--fg:#e6e6e6;--dim:#8b93a1;--me:#1f6feb;--aj:#1b2029;--ok:#3fb950;--bad:#f85149}
-  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"PingFang SC",system-ui,sans-serif;
-       display:flex;flex-direction:column;height:100dvh}
-  header{padding:10px 14px;border-bottom:1px solid #232833;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim)}
-  header b{color:var(--fg);font-size:15px}
-  #log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
-  .row{max-width:92%;padding:9px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
-  .me{align-self:flex-end;background:var(--me);color:#fff;border-bottom-right-radius:4px}
-  .aj{align-self:flex-start;background:var(--aj);border-bottom-left-radius:4px}
-  .tool{align-self:flex-start;background:#151a22;border:1px solid #232833;color:var(--dim);font:12px/1.5 ui-monospace,Menlo,monospace;max-width:96%}
-  .err{color:var(--bad)}
-  .ok{color:var(--ok)}
-  footer{border-top:1px solid #232833;padding:10px;display:flex;gap:8px;padding-bottom:calc(10px + env(safe-area-inset-bottom))}
-  textarea{flex:1;resize:none;height:46px;max-height:140px;background:#161b22;color:var(--fg);border:1px solid #262c36;
-           border-radius:10px;padding:11px 12px;font:15px/1.4 inherit;outline:none}
-  button{background:var(--me);color:#fff;border:0;border-radius:10px;padding:0 18px;font-size:15px;font-weight:600}
-  button:disabled{opacity:.5}
-  .hint{color:var(--dim);font-size:12px;padding:6px 14px}
-</style>
-</head>
-<body>
-<header><b>AJ</b><span id="st">在线</span></header>
+<meta name="theme-color" content="#111418">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AJ">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>AJ</title><style>
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;
+background:#111418;color:#e6e6e6;height:100dvh;display:flex;flex-direction:column}
+#log{flex:1;overflow-y:auto;padding:12px 14px}
+.m{margin:9px 0;white-space:pre-wrap;word-break:break-word}
+.u{color:#7cc4ff}.a{color:#e6e6e6}.t{color:#8a8f98;font-size:13px;font-family:ui-monospace,monospace}
+.t pre{margin:2px 0 0;white-space:pre-wrap;max-height:260px;overflow:auto;background:#0b0d10;
+padding:7px 9px;border-radius:7px;border-left:2px solid #2c3440}
+.tool{color:#f0b46c;font-size:13px}.err{color:#ff6b6b}.ok{color:#5ddc7e}
+#bar{display:flex;gap:8px;padding:9px 12px calc(9px + env(safe-area-inset-bottom));background:#171b21;border-top:1px solid #232a33}
+#inp{flex:1;resize:none;height:42px;max-height:130px;background:#0b0d10;color:#e6e6e6;border:1px solid #2c3440;
+border-radius:10px;padding:10px 12px;font:15px/1.35 inherit;outline:none}
+#go{width:64px;border:0;border-radius:10px;background:#2f6feb;color:#fff;font-size:15px}
+#go:disabled{background:#2a3340;color:#667}
+#memory{display:none;position:fixed;inset:0;background:#111418;z-index:20;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}
+#memory.on{display:flex}
+#mhead{display:flex;align-items:center;gap:10px;padding:12px 14px;background:#171b21;border-bottom:1px solid #232a33}
+#mhead b{flex:1;font-size:16px}
+#mhead button{padding:7px 12px;border:0;border-radius:8px;background:#2a3340;color:#ccd;font-size:14px}
+#mlist{flex:1;overflow-y:auto;padding:8px 10px}
+.mrow{display:flex;align-items:center;gap:10px;padding:11px 12px;margin:6px 0;background:#171b21;
+border-radius:10px;border:1px solid #232a33;cursor:pointer}
+.mrow .nm{flex:1;min-width:0}
+.mrow .nm div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .sz{color:#8a8f98;font-size:12px;margin-top:2px}
+.mrow .del{padding:6px 10px;border:0;border-radius:7px;background:#3a1d1d;color:#ff8b8b;font-size:13px}
+#mbody{flex:1;overflow-y:auto;padding:14px;white-space:pre-wrap;font:13px/1.6 ui-monospace,monospace;
+display:none;color:#cfd6e0}
+#memory.viewing #mlist{display:none}
+#memory.viewing #mbody{display:block}
+#mhead .back{display:none}
+#memory.viewing #mhead .back{display:block}
+#ask button{margin:6px 8px 0 0;padding:7px 14px;border:0;border-radius:8px;background:#5ddc7e;color:#08210f;font-size:14px}
+#ask button.no{background:#3a4048;color:#ccd}
+#thumb{display:none;padding:6px 12px 0;background:#171b21}
+#thumb.on{display:flex;gap:8px;flex-wrap:wrap}
+#thumb img{height:52px;border-radius:6px;border:1px solid #2c3440}
+#statbar{padding:2px 14px;font-size:12px;color:#7a7a7a;background:#12161b;border-top:1px solid #1c222b}
+#statbar .msel{color:#7cc4ff;cursor:pointer;border-bottom:1px dotted #7cc4ff}
+#mcfg{display:none;position:fixed;inset:0;background:#111418;z-index:22;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}
+#mcfg.on{display:flex}
+#mcfg .hrow{display:flex;align-items:center;gap:10px;padding:12px 14px;background:#171b21;border-bottom:1px solid #232a33}
+#mcfg .hrow b{flex:1;font-size:16px}
+#mcfg .hrow button{padding:7px 12px;border:0;border-radius:8px;background:#2a3340;color:#ccd;font-size:14px}
+#mcfg .tip{padding:10px 14px;color:#8a8f98;font-size:12px;line-height:1.5}
+#mcfg .tip code{color:#c9a0ff}
+#mlist2{flex:1;overflow-y:auto;padding:6px 10px}
+.mrow2{display:flex;align-items:center;gap:10px;padding:11px 12px;margin:6px 0;background:#171b21;
+border-radius:10px;border:1px solid #232a33}
+.mrow2 .nm{flex:1;min-width:0}
+.mrow2 .nm div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow2 .sz{color:#8a8f98;font-size:12px;margin-top:2px}
+.mrow2 .pick{padding:6px 12px;border:0;border-radius:7px;background:#2f6feb;color:#fff;font-size:13px}
+.mrow2.cur{border-color:#5ddc7e}
+.mrow2 .tag{font-size:11px;color:#8a8f98;margin-left:6px}
+</style></head><body>
 <div id="log"></div>
-<div class="hint">直接说要做什么。它能在这台手机的沙箱里跑命令。</div>
-<footer>
-  <textarea id="q" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-  <button id="go">发送</button>
-</footer>
+<div id="statbar"><span id="stat">○ 空闲</span> · <span id="mdl" class="msel" onclick="loadModels()">模型 ?</span></div>
+<div id="mcfg">
+  <div class="hrow"><button onclick="closeModels()">‹ 返回</button><b>用哪个模型</b>
+    <button onclick="pickModel('')">自动</button><button onclick="loadModels()">刷新</button></div>
+  <div class="tip">模型由本机 broker 决定（AJ_MODEL）。这里选的名字会作为 broker 请求里的 model 字段发过去，<code>自动 = 用 broker 默认</code>。</div>
+  <div id="mlist2"></div>
+</div>
+<div id="ask"><div id="asktxt"></div>
+<button onclick="ans('同意')">同意</button><button class="no" onclick="ans('拒绝')">拒绝</button><button onclick="ans('')">收起</button></div>
+<div id="memory">
+  <div id="mhead">
+    <button class="back" onclick="closeMem()">‹ 返回</button>
+    <b id="mtitle">记忆库</b>
+    <button onclick="loadMem()">刷新</button>
+  </div>
+  <div id="mlist"></div>
+  <div id="mbody"></div>
+</div>
+<div id="thumb"></div>
+<div id="bar"><textarea id="inp" placeholder="说任务，它自己动手"></textarea>
+<input type="file" id="file" multiple style="display:none">
+<button id="mbtn" onclick="loadMem();document.getElementById('memory').classList.add('on')" style="width:44px;border:0;border-radius:10px;background:#2a3340;color:#ccd;font-size:17px">🧠</button>
+<button id="pbtn" onclick="document.getElementById('file').click()" style="width:44px;border:0;border-radius:10px;background:#2a3340;color:#ccd;font-size:17px">📎</button>
+<button id="go" onclick="send()">发送</button></div>
 <script>
-const log=document.getElementById('log'), q=document.getElementById('q'), go=document.getElementById('go'), st=document.getElementById('st');
-const KEY='ajweb_hist';
-let hist = JSON.parse(localStorage.getItem(KEY)||'[]');
-function tok(){
-  const u=new URL(location.href);
-  if(u.searchParams.get('k')){ localStorage.setItem('ajtoken',u.searchParams.get('k')); u.searchParams.delete('k'); history.replaceState(null,'',u.toString()); }
-  return localStorage.getItem('ajtoken')||'';
-}
-function bubble(cls,txt){
-  const d=document.createElement('div'); d.className='row '+cls; d.textContent=txt; log.appendChild(d);
-  log.scrollTop=log.scrollHeight; return d;
-}
-function render(){ log.innerHTML=''; for(const m of hist){ bubble(m.role==='user'?'me':'aj', m.content); } }
-render();
-async function send(){
-  const text=q.value.trim(); if(!text) return;
-  q.value=''; hist.push({role:'user',content:text}); bubble('me',text);
-  go.disabled=true; st.textContent='思考中…';
+// ---- App 版：口令 ----
+// 打开 /?k=口令 时把口令记下来（并从地址栏抹掉），之后每个请求自动带 X-AJ-Token；
+// 服务端同时会种 ajtoken Cookie，两种都认。
+var TK = (function(){
+  var k = '';
   try{
-    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-AJ-Token':tok()},
-      body:JSON.stringify({text, history:hist.slice(-12,-1)})});
-    const j=await r.json();
-    if(j.error){ bubble('aj err','错误：'+j.error); }
-    else{
-      for(const e of (j.events||[])){
-        if(e.t==='sh') bubble('tool','$ '+e.v);
-        else if(e.t==='out') bubble('tool',e.v);
-        else if(e.t==='answer'){ bubble('aj',e.v); hist.push({role:'assistant',content:e.v}); }
-      }
-      if(!(j.events||[]).some(e=>e.t==='answer')) bubble('aj','（没有拿到回答）');
-    }
-  }catch(e){ bubble('aj err','连不上：'+e.message); }
-  go.disabled=false; st.textContent='在线';
-  localStorage.setItem(KEY,JSON.stringify(hist.slice(-40)));
+    var u = new URL(location.href), q = u.searchParams.get('k');
+    if(q){ k = q; try{ localStorage.setItem('ajtoken', q); }catch(e){}
+           u.searchParams.delete('k'); history.replaceState(null,'',u.toString()); }
+    else { k = localStorage.getItem('ajtoken') || ''; }
+  }catch(e){}
+  return k;
+})();
+(function(){
+  var _f = window.fetch.bind(window);
+  window.fetch = function(u, o){
+    o = o || {};
+    if(TK){ o.headers = Object.assign({}, o.headers || {}, {'X-AJ-Token': TK}); }
+    if(o.credentials === undefined){ o.credentials = 'same-origin'; }
+    return _f(u, o);
+  };
+})();
+function askToken(){
+  var t = prompt('要口令（AJ_WEB_TOKEN）：', TK || '');
+  if(t){ try{ localStorage.setItem('ajtoken', t); }catch(e){} location.reload(); }
 }
-go.onclick=send;
-q.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); }});
+// 2026-10-21 宿主定案：每次开页新建会话。旧逻辑从 localStorage 恢复 aj_sid，
+// 于是「重新打开网址」还是同一个会话文件，旧对话/旧 pending 状态全在里面，看着像没清干净。
+// 现在不再读 aj_sid；顺手把残留值删掉，免得旧壳页面继续用它。
+try{ localStorage.removeItem('aj_sid'); }catch(e){}
+let sid = null, last = 0, busy = false, askedAt = 0, historyDone = false, MS = null;
+// ---- 模型：显示现在用哪个 + 手动切（2026-10-21 宿主提）----
+function setStat(txt){
+  const el=document.getElementById('stat'); if(!el) return;
+  let inst = (MS && MS.instance) ? (' #'+MS.instance) : '';
+  el.textContent=txt+inst;
+  const m=document.getElementById('mdl');
+  if(MS){ m.textContent = MS.pin
+      ? ('模型 '+MS.current_short+'·钉')
+      : ('模型 '+(MS.current_short||'自动')); }
+}
+async function loadModels(){
+  const box=document.getElementById('mlist2');
+  document.getElementById('mcfg').classList.add('on');
+  if(!box.children.length) box.innerHTML='<div style="padding:20px;color:#8a8f98">读模型中…</div>';
+  try{
+    const r=await fetch('/model/list'); const j=await r.json(); MS=j;
+    box.innerHTML='';
+    if(j.error){ box.innerHTML='<div style="padding:20px;color:#ff6b6b">'+j.error+'</div>'; return; }
+    const rows=[{id:'',short:'自动（按推荐顺序）',tier:'auto',last:null}].concat(j.options||[]);
+    for(const o of rows){
+      const row=document.createElement('div'); row.className='mrow2'+(o.id===j.pin||(!o.id&&!j.pin)?' cur':'');
+      const nm=document.createElement('div'); nm.className='nm';
+      const t=document.createElement('div');
+      t.textContent=o.short+(o.tier==='paid'?' · 付费兜底':(o.tier==='free'?' · 免费':(o.tier==='backup'?' · 备用':'')));
+      const s2=document.createElement('div'); s2.className='sz';
+      s2.textContent=(o.last? ('上次调用 '+o.last) : '本进程没调用过');
+      nm.appendChild(t); nm.appendChild(s2);
+      const b=document.createElement('button'); b.className='pick'; b.textContent=(o.id===j.pin||(!o.id&&!j.pin))?'当前':'用它';
+      b.onclick=()=>pickModel(o.id);
+      row.appendChild(nm); row.appendChild(b); box.appendChild(row);
+    }
+  }catch(e){ box.innerHTML='<div style="padding:20px;color:#ff6b6b">读不到：'+e+'</div>'; }
+}
+async function pickModel(id){
+  try{
+    const r=await fetch('/model/pin',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:id})});
+    const j=await r.json();
+    if(j.error){ add('err','切换失败：'+j.error); return; }
+    MS=j; add('ok', id? ('已切到 '+ (j.current_short||id) +'（挂了会自动往后换）') : '已切回自动');
+    document.getElementById('mcfg').classList.remove('on');
+    refreshModel();
+  }catch(e){ add('err','连不上：'+e); }
+}
+function closeModels(){ document.getElementById('mcfg').classList.remove('on'); }
+async function refreshModel(){
+  try{ const r=await fetch('/model/status'); MS=await r.json(); }
+  catch(e){}
+  // 2026-10-22：状态栏带上实例号。原先 MS 来自 /model/list（那个接口没有 instance），
+  // 而 /model/status 才有，结果后端给了、前端永远显示不出来。
+  const _inst = MS && MS.instance ? (' #'+MS.instance) : '';
+  setStat((busy?'● 干活中':'○ 空闲')+_inst);
+}
+const log = document.getElementById('log'), inp = document.getElementById('inp');
+function add(cls, text){ const d=document.createElement('div'); d.className='m '+cls; d.textContent=text;
+  log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
+function addTool(title, body){ const d=document.createElement('div'); d.className='m t';
+  const h=document.createElement('div'); h.textContent='▸ '+title;
+  const p=document.createElement('pre'); p.textContent=body||''; p.style.display='none';
+  h.onclick=()=>{p.style.display = p.style.display==='none'?'block':'none';};
+  d.appendChild(h); d.appendChild(p); log.appendChild(d); log.scrollTop=log.scrollHeight; }
+async function send(){
+  const t = inp.value.trim();
+  if((!t && atts.length===0) || busy) return;
+  const wasBusy = document.getElementById('go').dataset.wasbusy==='1';
+  inp.value=''; add('u','你：'+(t||'（看图）')); busy=true;
+  const files = atts.map(a=>a.path); atts=[]; drawThumb();
+  if(wasBusy && sid){
+    // 它还在跑：话进队列，不当新任务
+    try{ await fetch('/say',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({sid:sid, text:t})}); }catch(e){ add('err','连不上：'+e); }
+    busy=false; document.getElementById('go').disabled=false;
+    add('ok','（已排队，它这步跑完就办）');
+    return;
+  }
+  try{
+    const r = await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({task:t, sid:sid, files:files})});
+    const j = await r.json(); if(j.sid){ sid = j.sid; }
+    if(j.error) add('err','错误：'+j.error);
+  }catch(e){ add('err','连不上：'+e); }
+  busy=false; document.getElementById('go').disabled=false;
+}
+async function ans(v){
+  document.getElementById('ask').style.display='none';
+  if(!v) return;
+  add('u','你：'+v);
+  await fetch('/answer',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sid:sid, answer:v})});
+}
+inp.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
+// ---- 图片上传 ----
+let atts = [];
+document.getElementById('file').addEventListener('change', async function(){
+  for(const f of this.files){
+    const fd = new FormData(); fd.append('f', f);
+    try{
+      const r = await fetch('/upload', {method:'POST', body:fd});
+      const j = await r.json();
+      if(j.ok){ atts.push(j); drawThumb(); add('ok','已上传 '+(j.name||f.name)); }
+      else add('err', '上传失败：'+(j.error||'?'));
+    }catch(e){ add('err','上传失败：'+e); }
+  }
+  this.value='';
+});
+function drawThumb(){
+  const t=document.getElementById('thumb'); t.innerHTML='';
+  atts.forEach((a,i)=>{
+    const im=document.createElement('img');
+    im.src = a.url || ('/uploads/' + encodeURIComponent(a.name||''));
+    im.title=a.name; im.onclick=()=>{ atts.splice(i,1); drawThumb(); };
+    // 2026-10-22：视频/音频/文档不是图片，<img> 加载不出来会变成碎图。
+    // 非图片改成文字标签，仍然可点删除。
+    if(!/\.(png|jpe?g|gif|webp|bmp|heic)$/i.test(a.path||'')){
+      im.onerror=()=>{ const d=document.createElement('div'); d.className='sz';
+        d.textContent='📎 '+(a.name||a.path||''); d.title=a.name; d.style.cursor='pointer';
+        d.onclick=()=>{ atts.splice(i,1); drawThumb(); }; im.replaceWith(d); };
+    }
+    t.appendChild(im);
+  });
+  t.classList.toggle('on', atts.length>0);
+}
+// ---- 记忆库 ----
+function fmt(s){ return s<1024? s+' B' : (s/1024).toFixed(1)+' KB'; }
+function closeMem(){ const m=document.getElementById('memory');
+  m.classList.remove('on'); m.classList.remove('viewing'); }
+async function loadMem(){
+  const box=document.getElementById('mlist'); box.innerHTML='加载中…';
+  try{
+    const r = await fetch('/mem/list'); const j = await r.json();
+    box.innerHTML='';
+    if(!j.files || !j.files.length){ box.innerHTML='<div style="padding:20px;color:#8a8f98">空。它还什么都没记。</div>'; return; }
+    for(const f of j.files){
+      const row=document.createElement('div'); row.className='mrow';
+      const nm=document.createElement('div'); nm.className='nm';
+      const t=document.createElement('div'); t.textContent=f.name;
+      const s=document.createElement('div'); s.className='sz'; s.textContent=fmt(f.size)+'  ·  '+f.mtime;
+      nm.appendChild(t); nm.appendChild(s);
+      const del=document.createElement('button'); del.className='del'; del.textContent='删';
+      del.onclick=(e)=>{ e.stopPropagation();
+        if(confirm('删掉 '+f.name+' ？删了没了。')) delMem(f.name); };
+      row.appendChild(nm); row.appendChild(del);
+      row.onclick=()=>openMem(f.name);
+      box.appendChild(row);
+    }
+  }catch(e){ box.innerHTML='<div style="padding:20px;color:#ff6b6b">读不到：'+e+'</div>'; }
+}
+async function openMem(name){
+  const m=document.getElementById('memory');
+  document.getElementById('mtitle').textContent = name;
+  const b=document.getElementById('mbody'); b.textContent='加载中…';
+  m.classList.add('viewing');
+  try{
+    const r = await fetch('/mem/read?name='+encodeURIComponent(name)); const j = await r.json();
+    b.textContent = j.content || j.error || '(空)';
+  }catch(e){ b.textContent='读不到：'+e; }
+}
+async function delMem(name){
+  await fetch('/mem/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name})});
+  const m=document.getElementById('memory'); m.classList.remove('viewing'); loadMem();
+}
+let seenSid = null;
+async function poll(){
+  try{
+    const q = sid ? ('?sid='+sid+'&since='+last) : ('?since='+last);
+    const r = await fetch('/poll'+q);
+    if(r.status === 401){ askToken(); return; }
+    const j = await r.json();
+    if(j.hist && j.hist.length && !historyDone){ historyDone = true;
+      document.getElementById('log').innerHTML='';
+      j.hist.forEach(h=>add(h.role, h.text));
+      add('ok','— 以上是之前的对话 —'); }
+    if(j.error){ /* 后端 poll 出错：别静默吞掉，让人看见 */ add('err','轮询出错：'+j.error); }
+    if(j.sid && j.sid !== seenSid){ seenSid = j.sid; sid = j.sid; last = 0; }
+    for(const ev of (j.events||[])){
+      if(typeof ev.i === 'number' && ev.i >= last){ last = Math.max(last, ev.i + 1); }
+      if(ev._drawn) continue;
+      ev._drawn = true;
+      if(ev.type==='tool') addTool(ev.title, ev.body);
+      else if(ev.type==='assistant') add('a', ev.text);
+      else if(ev.type==='err') add('err', ev.text);
+      else if(ev.type==='ask'){ const a=document.getElementById('ask');
+        document.getElementById('asktxt').textContent='它问：'+ev.text; a.style.display='block'; askedAt=1; }
+      else if(ev.type==='done'){ add('ok','✓ '+ev.text); busy=false; }
+    }
+    // 发送键永远亮着：它忙的时候你说话就自动排队
+    if(!j.busy) busy=false;   // 后端说空闲就以它为准，前端不能自己卡死
+    document.getElementById('go').disabled=false;
+    document.getElementById('go').dataset.wasbusy = j.busy ? '1' : '0';
+    document.getElementById('go').textContent = j.busy ? '排队' : '发送';
+    const st = document.getElementById('stat');
+    if(st){ let inst = (MS && MS.instance) ? (' #'+MS.instance) : '';
+            st.textContent = (j.busy ? '● 运行中' : '○ 空闲')+inst;
+            st.style.color = j.busy ? '#ffb74d' : '#7a7a7a'; }
+    // 每轮顺手刷新"现在用的哪个模型"：它换了模型你要能看见
+    if(j.model || !MS) { refreshModel(); }
+    else if(MS){ setStat(busy?'● 运行中':'○ 空闲'); }
+    document.getElementById('go').style.opacity = j.busy ? '0.85' : '1';
+    // 底部面板只在真有提问时出现；点过就关
+    const ae = document.getElementById('ask');
+    if(ae.style.display==='block' && !askedAt){ ae.style.display='none'; }  }catch(e){}
+  setTimeout(poll, 900);
+}
+poll();
 </script>
-</body>
-</html>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{})})}</script>
+</body></html>
