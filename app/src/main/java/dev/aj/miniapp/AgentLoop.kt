@@ -193,6 +193,43 @@ class AgentLoop(
     /** 定背后台任务用：不落盘，绝不碰用户的会话文件 */
     var persist: Boolean = true
 
+    /** 子代理层级：0 = 用户直接对话；子代理内为 1，不允许再往下派 */
+    var subDepth: Int = 0
+    private val subSlots = java.util.concurrent.Semaphore(3)
+
+    /**
+     * 子代理：换一份干净历史、自己跑一套工具循环，只把最后结论带回来。
+     * 主对话的历史不受影响；最多同时 3 个；不许嵌套。
+     */
+    private fun runSubagent(prompt: String): String {
+        if (prompt.isBlank()) return "[参数错误] 没有 prompt"
+        if (subDepth >= 1) return "[拒绝] 子代理不能再派子代理，自己把活干完"
+        val got = runCatching { subSlots.tryAcquire() }.getOrDefault(false)
+        if (!got) return "[排队] 同时最多跑 3 个子代理，满了，等前一个跑完再派"
+        val keepTask = RouteBrain.task
+        try {
+            var ans = ""
+            val child = AgentLoop(ctx, settings, envStore) { ev ->
+                when (ev) {
+                    is Event.Answer -> ans = ev.text
+                    is Event.Error -> if (ans.isBlank()) ans = "[子代理出错] " + ev.msg
+                    else -> {}
+                }
+            }
+            child.persist = false
+            child.subDepth = subDepth + 1
+            child.onConfirm = onConfirm
+            child.onAsk = null
+            child.send(prompt)
+            return ans.ifBlank { "[子代理没给出结论]" }
+        } catch (t: Throwable) {
+            return "[子代理失败] " + (t.message ?: t.javaClass.simpleName)
+        } finally {
+            RouteBrain.task = keepTask
+            subSlots.release()
+        }
+    }
+
     fun save() {
         if (!persist) return
         runCatching {
@@ -495,6 +532,12 @@ class AgentLoop(
                             val r = mcp.call(tc.name, tc.arguments)
                             onEvent(Event.Output(r))
                             r
+                        }
+                        tc.name == "task" -> {
+                            val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            val p = a.optString("prompt", "")
+                            onEvent(Event.Thinking("派子代理：" + p.take(60)))
+                            runSubagent(p)
                         }
                         cmd.isBlank() -> "[参数错误] 没有 command"
                         else -> {

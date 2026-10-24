@@ -906,6 +906,11 @@ class LlmClient(private val settings: Settings) {
     ).put(tool("skill",
         "查技能说明书。不给 name 就列出这台机器上所有技能；给 name 就返回那份 SKILL.md 正文。动手做不确定的事之前先用它。",
         mapOf("name" to ("string" to "技能名，如 ppt、pdf、xlsx；留空列清单")), emptyList())
+    ).put(tool("task",
+        "把一整件独立的活派给子代理跑：它有自己的上下文和完整工具（sh/读写文件/技能等），跑完只把结论带回来，" +
+        "不占你的对话历史。适合要翻很多文件、试很多次、只需要最终结果的活。最多同时 3 个，子代理不能再派子代理。",
+        mapOf("prompt" to ("string" to "完整任务说明：目标、约束、涉及路径、要返回什么。它看不到当前对话，必须写全。")),
+        listOf("prompt"))
     ).put(tool("ask_user",
         "停下来问用户。信息不足、要在两个方案里选、要动用户的东西之前，用这个问一句，等用户回答再继续。别自己猜。",
         mapOf("question" to ("string" to "要问用户的一句话")), listOf("question"))
