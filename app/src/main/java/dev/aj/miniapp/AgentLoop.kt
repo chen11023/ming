@@ -79,14 +79,39 @@ class AgentLoop(
 
     fun reset() = history.clear()
 
+    /** 当前会话 id，文件名就是它：sessions/<id>.json */
+    var sessionId: String = "last"
+        private set
+
+    private val sessionDir: java.io.File
+        get() = java.io.File(ctx.filesDir, "sessions").apply { mkdirs() }
+
     /** 会话文件：只存对话，不存 system（system 每轮重建） */
     private val sessionFile: java.io.File
-        get() = java.io.File(ctx.filesDir, "sessions/last.json").apply { parentFile?.mkdirs() }
+        get() = java.io.File(sessionDir, "$sessionId.json")
+
+    /** 开新会话：先把当前这段存下来，再切到新 id */
+    fun startNew(id: String) {
+        save()
+        sessionId = id
+        history.clear()
+    }
+
+    /** 切到某个历史会话，返回载入的消息条数 */
+    fun switchTo(id: String): Int {
+        save()
+        sessionId = id
+        return load()
+    }
 
     fun save() {
         runCatching {
             val arr = org.json.JSONArray()
             history.filter { it.optString("role") != "system" }.forEach { arr.put(it) }
+            if (arr.length() == 0) {
+                sessionFile.delete()   // 空会话不留文件，免得会话列表里一堆空壳
+                return@runCatching
+            }
             sessionFile.writeText(arr.toString())
         }
     }

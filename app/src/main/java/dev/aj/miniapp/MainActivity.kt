@@ -204,6 +204,11 @@ class MainActivity : Activity() {
                 appendChat("系统", "已发送停止指令", 0xFF6B7280.toInt())
             }
         }
+        val historyBtn = android.widget.Button(this).apply {
+            text = "☰"
+            setOnClickListener { showSessions() }
+        }
+        row.addView(historyBtn)
         row.addView(attachBtn)
         row.addView(chatInput, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(chatStop)
@@ -319,14 +324,22 @@ class MainActivity : Activity() {
 
     private fun sessionFile(name: String) = java.io.File(filesDir, "sessions/$name").apply { parentFile?.mkdirs() }
 
+    /** 当前会话 id（和 AgentLoop 里的一一对应） */
+    private var curSession = "last"
+
     private fun saveTranscript() {
         val t = transcript.toString()
         if (t.length > 300000) return
-        runCatching { sessionFile("chat.txt").writeText(t) }
+        runCatching { sessionFile("$curSession.txt").writeText(t) }
     }
 
     private fun restoreSession() {
-        val f = sessionFile("chat.txt")
+        curSession = agent.sessionId
+        // 老版本把聊天记录存在 chat.txt，第一次升级时并到当前会话名下
+        if (!sessionFile("last.txt").exists() && sessionFile("chat.txt").exists()) {
+            runCatching { sessionFile("chat.txt").renameTo(sessionFile("last.txt")) }
+        }
+        val f = sessionFile("$curSession.txt")
         if (f.exists()) runCatching {
             transcript.append(f.readText())
             renderAll()
@@ -338,18 +351,98 @@ class MainActivity : Activity() {
     }
 
     private fun newSession() {
-        runCatching { agent.reset() }
+        val id = java.text.SimpleDateFormat("MMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        // startNew 会先把当前会话存盘，历史不会丢
+        runCatching { agent.startNew(id) }
+        curSession = id
         transcript.setLength(0)
         streamBuf.setLength(0)
         chatView.text = ""
         outBox.removeAllViews()
         pending.clear()
         attachBtn.text = "📎"
-        runCatching {
-            sessionFile("chat.txt").delete()
-            sessionFile("last.json").delete()
+        appendChat("提示", "新会话开始（$id）。点「☰」可切回以前的会话。", 0xFF6B7280.toInt())
+    }
+
+    /** 会话列表：点一下切换，长按「删除当前」 */
+    private fun showSessions() {
+        val dir = java.io.File(filesDir, "sessions")
+        val ids = (dir.list() ?: emptyArray())
+            .filter { it.endsWith(".json") }
+            .map { it.removeSuffix(".json") }
+            .filter { it != curSession || java.io.File(dir, "$it.json").length() > 2 }
+            .sortedByDescending { java.io.File(dir, "$it.json").lastModified() }
+        if (ids.isEmpty()) {
+            appendChat("提示", "还没有历史会话。", 0xFF6B7280.toInt())
+            return
         }
-        appendChat("提示", "新会话开始。", 0xFF6B7280.toInt())
+        val sdf = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
+        val items = ids.map { id ->
+            val f = java.io.File(dir, "$id.json")
+            val n = runCatching { org.json.JSONArray(f.readText()).length() }.getOrDefault(0)
+            val mark = if (id == curSession) "▶ " else ""
+            "$mark${sdf.format(java.util.Date(f.lastModified()))}  ${sessionTitle(f)}  (${n}条)"
+        }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("历史会话（点一行切换）")
+            .setItems(items) { _, i -> switchSession(ids[i]) }
+            .setNeutralButton("删除当前") { _, _ -> deleteCurrentSession() }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 从会话文件里抠出标题：第一条用户消息的前 26 个字 */
+    private fun sessionTitle(f: java.io.File): String = runCatching {
+        val arr = org.json.JSONArray(f.readText())
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            if (o.optString("role") != "user") continue
+            val c = o.opt("content")
+            if (c is org.json.JSONArray) {
+                for (k in 0 until c.length()) {
+                    val part = c.optJSONObject(k) ?: continue
+                    if (part.optString("type") == "text") {
+                        return@runCatching part.optString("text").replace("\n", " ").take(26)
+                    }
+                }
+                return@runCatching "(附件)"
+            }
+            return@runCatching c.toString().replace("\n", " ").take(26)
+        }
+        "(空)"
+    }.getOrDefault("(空)")
+
+    private fun switchSession(id: String) {
+        if (id == curSession) return
+        val n = runCatching { agent.switchTo(id) }.getOrDefault(0)
+        curSession = id
+        transcript.setLength(0)
+        streamBuf.setLength(0)
+        chatView.text = ""
+        outBox.removeAllViews()
+        runCatching {
+            val f = sessionFile("$id.txt")
+            if (f.exists()) {
+                transcript.append(f.readText())
+                renderAll()
+            }
+        }
+        appendChat("提示", "已切到会话 $id（$n 条消息）", 0xFF6B7280.toInt(), false)
+    }
+
+    private fun deleteCurrentSession() {
+        android.app.AlertDialog.Builder(this)
+            .setMessage("删除当前会话 $curSession？删了就找不回来了。")
+            .setPositiveButton("删除") { _, _ ->
+                runCatching {
+                    sessionFile("$curSession.txt").delete()
+                    sessionFile("$curSession.json").delete()
+                }
+                newSession()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun appendChat(tag: String, body: String, color: Int, save: Boolean = true) {
