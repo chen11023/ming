@@ -513,7 +513,12 @@ class MainActivity : Activity() {
                 is AgentLoop.Event.Stat -> {
                     KeepAlive.stop(this)
                     settings.usageAdd(ev.calls, ev.chars, ev.ms)
-                    settings.usageModelAdd(settings.modelLabel(), ev.calls, ev.chars, ev.ms)
+                    val usedM = agent.lastModel()
+                    val label = if (usedM.isNotBlank() && usedM != settings.model) usedM else settings.modelLabel()
+                    settings.usageModelAdd(label, ev.calls, ev.chars, ev.ms)
+                    if (usedM.isNotBlank() && usedM != settings.model) appendChat(
+                        "提示", "主模型（${settings.model}）不可用，这一轮自动切到 $usedM", 0xFFB45309.toInt(), false
+                    )
                     if (ev.calls > 0) appendChat(
                         "统计",
                         "${ev.calls} 次模型调用 · ${String.format("%.1f", ev.chars / 10000.0)} 万字符 · " +
@@ -1295,6 +1300,7 @@ class MainActivity : Activity() {
                 setOnClickListener { settings.chatFont = settings.chatFont + 1f; applyTheme() }
             })
         })
+        v.addView(chk("主模型挂了自动切备用（同服务商，最多 2 个）", { settings.autoFallback }, { settings.autoFallback = it }))
         v.addView(chk("执行命令 / 出图前弹确认卡", { settings.confirmExec }, { settings.confirmExec = it }))
         v.addView(chk("回答自动朗读", { settings.speakReplies }, { settings.speakReplies = it }))
         v.addView(chk("任务完成发系统通知", { settings.notifyDone }, { settings.notifyDone = it }))

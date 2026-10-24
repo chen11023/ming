@@ -32,6 +32,9 @@ class AgentLoop(
     }
 
     private val client = LlmClient(settings)
+
+    /** 本轮实际用的模型（主模型挂了会自动切到同服务商的备用模型） */
+    fun lastModel(): String = client.lastUsedModel
     private val mcp by lazy { McpManager(ctx) }
 
     @Volatile
@@ -184,6 +187,7 @@ class AgentLoop(
 
     fun send(userText: String, parts: List<JSONObject> = emptyList()) {
         stopFlag = false
+        client.forgetModel()
         client.resetCancel()
         statCalls = 0
         statChars = 0L

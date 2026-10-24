@@ -252,6 +252,11 @@ class Settings(ctx: Context) {
         get() = sp.getString("systemPrompt", DEFAULT_SYSTEM) ?: DEFAULT_SYSTEM
         set(v) = sp.edit().putString("systemPrompt", v).apply()
 
+    /** 主模型失败时自动切同一服务商下的备用模型（默认开，最多再试 2 个） */
+    var autoFallback: Boolean
+        get() = sp.getBoolean("autoFallback", true)
+        set(v) = sp.edit().putBoolean("autoFallback", v).apply()
+
     /** 执行命令 / 出图前弹确认卡（默认开） */
     var confirmExec: Boolean
         get() = sp.getBoolean("confirmExec", true)
@@ -485,24 +490,60 @@ class LlmClient(private val settings: Settings) {
         return base - jitter + (Math.random() * 2 * jitter).toLong()
     }
 
-    fun chat(history: List<JSONObject>, extraTools: org.json.JSONArray? = null): Reply {
-        var attempt = 0
-        while (true) {
-            attempt++
-            val r = chatOnce(history, extraTools)
-            val err = r.error ?: return r
-            if (cancelled || attempt >= 3 || !retryable(err)) return r
-            Thread.sleep(backoffMs(attempt))
-        }
+    /** 备用模型：同一服务商下的其它模型，主模型挂了按顺序顶上 */
+    private fun fallbacks(): List<String> {
+        val cur = settings.model
+        if (cur.isBlank()) return emptyList()
+        if (!settings.autoFallback) return emptyList()
+        return settings.currentProvider()?.models
+            ?.filter { it.isNotBlank() && it != cur }
+            ?.take(2) ?: emptyList()
     }
 
-    private fun chatOnce(history: List<JSONObject>, extraTools: org.json.JSONArray? = null): Reply {
+    /** 401/403 是 key 或权限问题，换模型也没用，别再白试 */
+    private fun fatalAuth(err: String): Boolean = Regex("HTTP 40[13]\\b").containsMatchIn(err)
+
+    /** 本次实际干活的模型（切过就和 settings.model 不一样） */
+    @Volatile
+    var lastUsedModel: String = ""
+        private set
+
+    /** 每轮开始清零，方便判断这一轮有没有切过模型 */
+    fun forgetModel() {
+        lastUsedModel = ""
+    }
+
+    fun chat(history: List<JSONObject>, extraTools: org.json.JSONArray? = null): Reply {
+        var last = Reply(null, emptyList(), "没有可用模型")
+        for (m in listOf(settings.model) + fallbacks()) {
+            var attempt = 0
+            while (true) {
+                attempt++
+                last = chatOnce(history, extraTools, m)
+                val err = last.error
+                if (err == null) {
+                    lastUsedModel = m
+                    return last
+                }
+                if (cancelled || fatalAuth(err) || attempt >= 3 || !retryable(err)) break
+                Thread.sleep(backoffMs(attempt))
+            }
+            if (cancelled) break
+        }
+        return last
+    }
+
+    private fun chatOnce(
+        history: List<JSONObject>,
+        extraTools: org.json.JSONArray? = null,
+        model: String = settings.model
+    ): Reply {
         if (!settings.configured) {
             return Reply(null, emptyList(), "还没填 API key，去设置页填一下")
         }
 
         val body = JSONObject().apply {
-            put("model", settings.model)
+            put("model", model)
             put("messages", org.json.JSONArray(history))
             put("temperature", 0.7)
             put("tools", buildTools(extraTools))
@@ -536,34 +577,45 @@ class LlmClient(private val settings: Settings) {
      * 流式版本：边收边把增量文字吐给 onDelta，tool_calls 按 index 拼完再返回。
      * 服务端不认 stream 时自动退回普通响应。
      */
-    private fun noStreamFor(): Boolean = settings.noStream(settings.baseUrl, settings.model)
+    private fun noStreamFor(model: String): Boolean = settings.noStream(settings.baseUrl, model)
 
-    private fun markNoStream() = settings.markNoStream(settings.baseUrl, settings.model)
+    private fun markNoStream(model: String) = settings.markNoStream(settings.baseUrl, model)
 
     fun chatStream(
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
         onDelta: (String) -> Unit
     ): Reply {
-        var attempt = 0
         var emitted = false
-        while (true) {
-            attempt++
-            val r = chatStreamOnce(history, extraTools) { emitted = true; onDelta(it) }
-            val err = r.error ?: return r
-            if (cancelled || emitted || attempt >= 3 || !retryable(err)) return r
-            Thread.sleep(backoffMs(attempt))
+        var last = Reply(null, emptyList(), "没有可用模型")
+        for (m in listOf(settings.model) + fallbacks()) {
+            var attempt = 0
+            while (true) {
+                attempt++
+                last = chatStreamOnce(history, extraTools, m) { emitted = true; onDelta(it) }
+                val err = last.error
+                if (err == null) {
+                    lastUsedModel = m
+                    return last
+                }
+                // 已经吐过字就不能换模型重来，否则用户会看到重复内容
+                if (cancelled || emitted || fatalAuth(err) || attempt >= 3 || !retryable(err)) break
+                Thread.sleep(backoffMs(attempt))
+            }
+            if (cancelled || emitted) break
         }
+        return last
     }
 
     private fun chatStreamOnce(
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
+        model: String,
         onDelta: (String) -> Unit
     ): Reply {
         // 有的模型（智谱部分型号）不认 stream:true，记住一次，以后这套配置直接整段返回
-        if (noStreamFor()) {
-            val r = chat(history, extraTools)
+        if (noStreamFor(model)) {
+            val r = chatOnce(history, extraTools, model)
             r.text?.let { onDelta(it) }
             return r
         }
@@ -572,7 +624,7 @@ class LlmClient(private val settings: Settings) {
         }
 
         val body = JSONObject().apply {
-            put("model", settings.model)
+            put("model", model)
             put("messages", org.json.JSONArray(history))
             put("temperature", 0.7)
             put("tools", buildTools(extraTools))
@@ -593,8 +645,8 @@ class LlmClient(private val settings: Settings) {
                 if (!resp.isSuccessful) {
                     val raw = resp.body?.string().orEmpty()
                     if (resp.code == 400 && (raw.contains("1212") || raw.contains("SSE"))) {
-                        markNoStream()
-                        val r = chat(history, extraTools)
+                        markNoStream(model)
+                        val r = chatOnce(history, extraTools, model)
                         r.text?.let { onDelta(it) }
                         return r
                     }
