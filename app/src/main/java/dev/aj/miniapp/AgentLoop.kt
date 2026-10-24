@@ -261,6 +261,10 @@ class AgentLoop(
                     val label = when {
                         tc.name == "draw" ->
                             "出图：" + runCatching { JSONObject(tc.arguments).optString("prompt") }.getOrDefault("")
+                        tc.name == "remind" ->
+                            "设提醒：" + runCatching {
+                                JSONObject(tc.arguments).let { it.optString("delay") + " 后 " + it.optString("text") }
+                            }.getOrDefault("")
                         tc.name.startsWith("mcp__") -> "调用 MCP 工具：${tc.name}"
                         else -> "执行命令：" + cmd
                     }
@@ -275,6 +279,15 @@ class AgentLoop(
                     }
 
                     val result = when {
+                        tc.name == "remind" -> {
+                            val args = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            val d = Remind.parseDelay(args.optString("delay", "10"))
+                            val txt = args.optString("text", "").ifBlank { "时间到了" }
+                            if (d <= 0) "[参数错误] delay 写法要像 10m / 30s / 2h" else {
+                                Remind.set(ctx, d, txt)
+                                "已设提醒：${Remind.whenText(d)} · $txt"
+                            }
+                        }
                         tc.name == "draw" -> {
                             val args = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
                             val prompt = args.optString("prompt", "")

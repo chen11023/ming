@@ -291,7 +291,41 @@ class Settings(ctx: Context) {
     val usageMs: Long get() = sp.getLong("u.ms", 0L)
 
     fun usageReset() {
-        sp.edit().remove("u.calls").remove("u.chars").remove("u.ms").apply()
+        sp.edit().remove("u.calls").remove("u.chars").remove("u.ms")
+            .remove("u.byModel").apply()
+    }
+
+    /** 按「服务商 · 模型」分开记，看是谁在吃额度 */
+    fun usageModelAdd(label: String, calls: Int, chars: Long, ms: Long) {
+        if (label.isBlank() || calls <= 0) return
+        val all = runCatching { org.json.JSONObject(sp.getString("u.byModel", "{}")) }
+            .getOrElse { org.json.JSONObject() }
+        val one = all.optJSONObject(label) ?: org.json.JSONObject()
+        one.put("c", one.optInt("c") + calls)
+        one.put("ch", one.optLong("ch") + chars)
+        one.put("ms", one.optLong("ms") + ms)
+        all.put(label, one)
+        sp.edit().putString("u.byModel", all.toString()).apply()
+    }
+
+    /** (标签, 次数, 字符数)，按次数从多到少 */
+    fun usageModels(): List<Triple<String, Int, Long>> {
+        val all = runCatching { org.json.JSONObject(sp.getString("u.byModel", "{}")) }
+            .getOrElse { org.json.JSONObject() }
+        val out = mutableListOf<Triple<String, Int, Long>>()
+        for (k in all.keys()) {
+            val o = all.optJSONObject(k) ?: continue
+            out += Triple(k, o.optInt("c"), o.optLong("ch"))
+        }
+        out.sortByDescending { it.second }
+        return out
+    }
+
+    /** 当前「服务商 · 模型」标签，用量和顶栏都用它 */
+    fun modelLabel(): String {
+        val p = currentProvider()?.name ?: "未配置"
+        val m = activeModelName.ifBlank { "未选模型" }
+        return "$p · $m"
     }
 
     // ------------------------------------------------ 配置导出 / 导入（换机、重装用）
@@ -670,6 +704,31 @@ class LlmClient(private val settings: Settings) {
                         })
                     })
                     put("required", org.json.JSONArray().put("prompt"))
+                })
+            })
+        }
+    ).put(
+        JSONObject().apply {
+            put("type", "function")
+            put("function", JSONObject().apply {
+                put("name", "remind")
+                put(
+                    "description",
+                    "设一个本地定时提醒：到点由系统发通知，不需要 App 开着，也不花钱。"
+                )
+                put("parameters", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject().apply {
+                        put("delay", JSONObject().apply {
+                            put("type", "string")
+                            put("description", "多久之后提醒，写法 10m / 30s / 2h / 10（默认分钟）")
+                        })
+                        put("text", JSONObject().apply {
+                            put("type", "string")
+                            put("description", "提醒内容，如「喝水」「开会」")
+                        })
+                    })
+                    put("required", org.json.JSONArray().put("delay").put("text"))
                 })
             })
         }

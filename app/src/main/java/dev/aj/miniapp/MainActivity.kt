@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private var allowAllThisSession = false
     private val EXPORT_CODE = 3001
     private val IMPORT_CODE = 3002
+    private val LOG_CODE = 3003
 
     private lateinit var rootView: android.view.View
     private lateinit var chatPageView: android.view.View
@@ -55,6 +56,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        Diag.install(this)                   // 崩了落文件，设置页能导出
         settings.migratePlaintext()          // 老版本明文 key 转密文
         MemoryStore(this).ensure()
         envStore = EnvStore(this)
@@ -430,6 +432,22 @@ class MainActivity : Activity() {
         val t = chatInput.text.toString().trim()
         turnStart = System.currentTimeMillis() - 2000
         if (t.isEmpty() && pending.isEmpty()) return
+        // 本地命令：/r 10m 喝水 —— 直接设系统提醒，不发给模型
+        if (t.startsWith("/r ") || t.startsWith("/remind ")) {
+            val rest = t.substringAfter(' ').trim()
+            val sp = rest.indexOf(' ')
+            val head = if (sp > 0) rest.substring(0, sp) else rest
+            val body = if (sp > 0) rest.substring(sp + 1).trim() else ""
+            val d = Remind.parseDelay(head)
+            chatInput.setText("")
+            if (d <= 0 || body.isBlank()) {
+                appendChat("提示", "用法：/r 10m 喝水（s 秒 / m 分 / h 小时）", 0xFFDC2626.toInt(), false)
+                return
+            }
+            Remind.set(this, d, body)
+            appendChat("提醒", "${Remind.whenText(d)} 提醒你：$body", 0xFF16A34A.toInt(), false)
+            return
+        }
         if (!settings.configured) {
             appendChat("错误", "先填 API Key。", 0xFFDC2626.toInt())
             return
@@ -491,6 +509,7 @@ class MainActivity : Activity() {
                 }
                 is AgentLoop.Event.Stat -> {
                     settings.usageAdd(ev.calls, ev.chars, ev.ms)
+                    settings.usageModelAdd(settings.modelLabel(), ev.calls, ev.chars, ev.ms)
                     if (ev.calls > 0) appendChat(
                         "统计",
                         "${ev.calls} 次模型调用 · ${String.format("%.1f", ev.chars / 10000.0)} 万字符 · " +
@@ -505,6 +524,7 @@ class MainActivity : Activity() {
     }
 
     private var pendingExport: String? = null
+    private var pendingLog: String? = null
 
     private fun startExport() {
         pendingExport = buildExport()
@@ -518,6 +538,21 @@ class MainActivity : Activity() {
             )
         }
         runCatching { startActivityForResult(i, EXPORT_CODE) }
+            .onFailure { appendChat("错误", "打不开保存对话框：${it.message}", 0xFFDC2626.toInt(), false) }
+    }
+
+    private fun startLogExport() {
+        pendingLog = Diag.exportText(this)
+        val i = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(
+                android.content.Intent.EXTRA_TITLE,
+                "aj-diag-" + java.text.SimpleDateFormat("MMdd-HHmm", java.util.Locale.US)
+                    .format(java.util.Date()) + ".txt"
+            )
+        }
+        runCatching { startActivityForResult(i, LOG_CODE) }
             .onFailure { appendChat("错误", "打不开保存对话框：${it.message}", 0xFFDC2626.toInt(), false) }
     }
 
@@ -581,6 +616,17 @@ class MainActivity : Activity() {
             }
             return
         }
+        if (requestCode == LOG_CODE) {
+            val uri = data.data ?: return
+            runCatching {
+                contentResolver.openOutputStream(uri)?.use { it.write((pendingLog ?: "").toByteArray()) }
+            }.onSuccess {
+                appendChat("提示", "诊断日志已导出。", 0xFF16A34A.toInt(), false)
+            }.onFailure {
+                appendChat("错误", "导出失败：${it.message}", 0xFFDC2626.toInt(), false)
+            }
+            return
+        }
         if (requestCode == IMPORT_CODE) {
             val uri = data.data ?: return
             val t = runCatching {
@@ -617,6 +663,14 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun modelUsageLine(): String {
+        val list = settings.usageModels()
+        if (list.isEmpty()) return "（还没有按模型的数据）"
+        return list.take(6).joinToString("\n") { (label, calls, chars) ->
+            "· $label：$calls 次 / ${String.format("%.1f", chars / 10000.0)} 万字符"
+        } + if (list.size > 6) "\n· 还有 ${list.size - 6} 个" else ""
     }
 
     private fun usageLine(): String {
@@ -1192,11 +1246,19 @@ class MainActivity : Activity() {
             textSize = 13f
         }
         v.addView(usageTv)
+        val modelUsageTv = TextView(this).apply {
+            text = modelUsageLine()
+            textSize = 12f
+            setTextColor(0xFF6B7280.toInt())
+            setPadding(0, 10, 0, 6)
+        }
+        v.addView(modelUsageTv)
         v.addView(android.widget.Button(this).apply {
             text = "清零"
             setOnClickListener {
                 settings.usageReset()
                 usageTv.text = usageLine()
+                modelUsageTv.text = modelUsageLine()
             }
         })
 
@@ -1254,6 +1316,22 @@ class MainActivity : Activity() {
                         mcp.setEnabled(s.name, !s.enabled)
                         agent.refreshMcp()
                         renderMcp()
+                    }
+                })
+                row.addView(android.widget.Button(this).apply {
+                    text = "测"
+                    textSize = 12f
+                    setOnClickListener {
+                        text = "…"
+                        thread {
+                            val r = McpManager(this@MainActivity).probe(s.name)
+                            runOnUiThread {
+                                renderMcp()
+                                android.widget.Toast.makeText(
+                                    this@MainActivity, r.take(300), android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                     }
                 })
                 row.addView(android.widget.Button(this).apply {
@@ -1478,6 +1556,57 @@ class MainActivity : Activity() {
             }
         })
         v.addView(memBar)
+
+        // ---------------- 关于 / 诊断
+        v.addView(label("关于 / 诊断"))
+        val verLine = TextView(this).apply {
+            text = "版本 ${Diag.verName(this@MainActivity)} · 崩溃记录 ${Diag.crashCount(this@MainActivity)} 条"
+            textSize = 13f
+            setPadding(0, 8, 0, 8)
+        }
+        v.addView(verLine)
+        val crashTv = TextView(this).apply {
+            text = Diag.lastCrashTail(this@MainActivity).ifBlank { "（没有崩溃记录）" }
+            textSize = 11f
+            setTextColor(0xFF9CA3AF.toInt())
+            setPadding(0, 4, 0, 10)
+        }
+        v.addView(crashTv)
+        v.addView(android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "导出日志"
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+                setOnClickListener { startLogExport() }
+            })
+            addView(android.widget.Button(this@MainActivity).apply {
+                text = "检查更新"
+                layoutParams = android.widget.LinearLayout.LayoutParams(0, -2, 1f)
+                setOnClickListener {
+                    text = "查…"
+                    thread {
+                        val b = Diag.latestRun()
+                        runOnUiThread {
+                            text = "检查更新"
+                            if (b == null) {
+                                android.widget.Toast.makeText(
+                                    this@MainActivity, "查不到（网络或限流）", android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                verLine.text = "版本 ${Diag.verName(this@MainActivity)} · 最新构建 r${b.number}（${b.at}）"
+                                android.widget.Toast.makeText(
+                                    this@MainActivity, "最新构建 r${b.number}", android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                runCatching { startActivity(android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(if (b.url.isBlank()) "https://github.com/chen11023/ming/actions" else b.url)
+                                )) }
+                            }
+                        }
+                    }
+                }
+            })
+        })
 
         // 按小节标题拆成多页：菜单 → 点进去只看一节
         val groups = LinkedHashMap<String, MutableList<android.view.View>>()
