@@ -18,7 +18,7 @@ object Linux {
     private const val TAG = "Linux"
 
     /** 只有改这个值才会强制重新解压（改 rootfs 内容时同步改它） */
-    private const val ROOTFS_TAG = "alpine3.22.6-p4"
+    private const val ROOTFS_TAG = "alpine3.24.3-p1"
 
     /** 解压完成标记（内容含 ROOTFS_TAG） */
     private const val MARKER = ".ready2"
@@ -29,7 +29,6 @@ object Linux {
         "bin/bash",
         "usr/bin/curl",
         "usr/bin/git",
-        "usr/bin/python3.12",
         "etc/alpine-release",
     )
 
@@ -44,6 +43,17 @@ object Linux {
     }
 
     fun rootDir(ctx: Context): File = File(ctx.filesDir, "rootfs")
+
+    /** python 版本跟着底座走（3.22 是 3.12，3.24 是 3.14），所以不写死 */
+    private fun pyBins(root: File): List<File> =
+        root.resolve("usr/bin").listFiles()
+            ?.filter { it.isFile && it.name.matches(Regex("python3\\.[0-9]+")) } ?: emptyList()
+
+    /** 对应版本的 site-packages 目录，可能为空 */
+    fun siteDirs(root: File): List<File> =
+        root.resolve("usr/lib").listFiles()
+            ?.filter { it.name.matches(Regex("python3\\.[0-9]+")) }
+            ?.map { File(it, "site-packages") }?.filter { it.isDirectory } ?: emptyList()
 
     /**
      * 写 rootfs/etc/resolv.conf。
@@ -99,6 +109,7 @@ object Linux {
         if (!mk.exists()) return false
         if (!mk.readText().contains("tag=$ROOTFS_TAG")) return false
         if (KEY_PATHS.any { !File(root, it).isFile || File(root, it).length() == 0L }) return false
+        if (pyBins(root).isEmpty()) return false
         return prootPath(ctx).exists()
     }
 
@@ -179,12 +190,14 @@ object Linux {
                 val k = File(dest, p)
                 !k.isFile || k.length() == 0L
             }
+            if (pyBins(dest).isEmpty()) throw java.io.IOException("解压不完整，缺 python3")
             if (missing.isNotEmpty()) {
                 throw java.io.IOException("解压不完整，缺 ${missing.size} 项: ${missing.joinToString(",")}")
             }
             // apk 需要这两个目录，否则每次 add 都因写缓存失败返回 5
             for (d in listOf("var/lib/apk", "var/cache/apk", "var/cache/fontconfig", "var/tmp")) File(dest, d).mkdirs()
             File(dest, MARKER).writeText("tag=$ROOTFS_TAG\nfiles=$count\ncostMs=$cost\n")
+            runCatching { File(ctx.filesDir, "rootfs.version").writeText(ROOTFS_TAG + "\n") }
             if (oldDir.exists()) oldDir.deleteRecursively()
             if (finalDir.exists() && !finalDir.renameTo(oldDir)) {
                 throw java.io.IOException("旧 rootfs 让位失败")
@@ -257,10 +270,7 @@ object Linux {
     fun patchPython(ctx: Context) {
         val root = rootDir(ctx)
         if (!root.exists()) return
-        val dirs = listOf("usr/lib/python3.12/site-packages", "usr/lib/python3.11/site-packages")
-        for (d in dirs) {
-            val dir = File(root, d)
-            if (!dir.isDirectory) continue
+        for (dir in siteDirs(root)) {
             val f = File(dir, "sitecustomize.py")
             try {
                 if (f.exists() && f.readText() == SITECUSTOMIZE) continue
@@ -458,7 +468,7 @@ object Linux {
 
             // 关键库冒烟：numpy/matplotlib 是画图的地基
             patchPython(ctx)
-            val sc0 = File(root, "usr/lib/python3.12/site-packages/sitecustomize.py")
+            val sc0 = siteDirs(root).firstOrNull()?.let { File(it, "sitecustomize.py") } ?: File(root, ".none")
             appendLine("py补丁   : ${if (sc0.exists()) "✅ ${sc0.length()} B" else "❌ 未写入"}")
             val (nc, no) = run(ctx, "python3 -c \"import numpy;print('numpy',numpy.__version__)\" 2>&1 | tail -2", 120)
             appendLine("numpy    : exit=$nc  ${no.trim().take(160)}")

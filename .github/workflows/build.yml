@@ -49,7 +49,7 @@ jobs:
           set -e
           mkdir -p app/src/main/assets
           curl -fsSL --retry 3 -o /tmp/alpine.tar.gz \
-            "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/alpine-minirootfs-3.22.6-aarch64.tar.gz"
+            "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.3-aarch64.tar.gz"
           ls -la /tmp/alpine.tar.gz
 
       # ---------- 3. 往 rootfs 里预装常用包（跨架构安装） ----------
@@ -62,7 +62,7 @@ jobs:
 
           # 优先用 alpine 官方 apk 静态二进制做跨架构安装
           curl -fsSL -o /tmp/apk.static \
-            "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/apk-tools-static-2.14.12-r0.apk" || true
+            "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/apk-tools-static-3.0.8-r0.apk" || true
           if [ -s /tmp/apk.static ]; then
             mkdir -p /tmp/apkx && tar xzf /tmp/apk.static -C /tmp/apkx 2>/dev/null || true
             APK=$(find /tmp/apkx -name "apk.static" -o -name "apk" -type f | head -1)
@@ -71,13 +71,13 @@ jobs:
               mkdir -p /tmp/rootfs
               sudo tar xzf /tmp/alpine.tar.gz -C /tmp/rootfs || tar xzf /tmp/alpine.tar.gz -C /tmp/rootfs
               # 逐个装，某个包名不存在时只跳过它，不整体失败
-              for pkg in bash python3 curl git nano \
+              for pkg in bash python3 curl git nano tzdata \
                          py3-pillow py3-matplotlib py3-numpy py3-openpyxl \
                          py3-pdfminer ffmpeg poppler-utils font-noto-cjk; do
                 echo "=== install $pkg"
                 sudo "$APK" --root /tmp/rootfs --arch aarch64 \
-                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/main \
-                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.22/community \
+                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
+                  --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
                   --allow-untrusted --no-cache add "$pkg" 2>&1 | tail -3 || echo "skip $pkg"
               done
               sudo mkdir -p /tmp/rootfs/var/lib/apk /tmp/rootfs/var/cache/apk \
@@ -90,9 +90,14 @@ jobs:
             fi
           fi
 
-          # 上一步没成功就用原始 minirootfs
+          # 兜底：只有确认关键命令都在时才打包，否则直接失败（发出没 bash/python 的底座会害死装机）
           if [ ! -s app/src/main/assets/rootfs.tar.gz ]; then
-            cp /tmp/alpine.tar.gz app/src/main/assets/rootfs.tar.gz
+            echo "rootfs 预装失败，检查关键命令"
+            for b in bin/bash usr/bin/curl usr/bin/git; do
+              test -s "/tmp/rootfs/$b" || { echo "缺少 $b —— 停止构建"; exit 1; }
+            done
+            ls /tmp/rootfs/usr/bin/python3.* >/dev/null 2>&1 || { echo "缺少 python3 —— 停止构建"; exit 1; }
+            tar czf app/src/main/assets/rootfs.tar.gz -C /tmp/rootfs .
           fi
           ls -la app/src/main/assets/
 
