@@ -86,7 +86,8 @@ object Sshd {
             [ -f /etc/passwd- ] || cp -p /etc/passwd /etc/passwd- 2>/dev/null || true
             echo "root:${p}" | chpasswd 2>/dev/null || true
             printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' 'PermitEmptyPasswords no' 'UsePAM no' > /etc/ssh/sshd_config.d/aj.conf 2>/dev/null || true
-            if ! grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config 2>/dev/null; then { printf '%s\n' 'Include /etc/ssh/sshd_config.d/*.conf'; cat /etc/ssh/sshd_config; } > /tmp/_sshcfg; mv /tmp/_sshcfg /etc/ssh/sshd_config; fi
+            sed -i '/^PasswordAuthentication/d;/^PermitRootLogin/d;/^KbdInteractiveAuthentication/d;/^UsePAM/d' /etc/ssh/sshd_config 2>/dev/null || true
+            printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' 'UsePAM no' >> /etc/ssh/sshd_config
             echo ok
         """.trimIndent()
         val (code, out) = Linux.run(ctx, script, timeoutSec = 300)
@@ -95,13 +96,17 @@ object Sshd {
 
     fun start(ctx: Context): String {
         val port = port(ctx)
-        if (alive(port)) return "已经在跑（端口 $port 可连）"
+        // 已经活着也重来一遍：配置文件可能改过，重载才生效（按 pid 文件精确杀，不用 pkill）
+        if (alive(port)) {
+            Linux.run(ctx, "if [ -f /run/aj-sshd.pid ]; then kill \"\$(cat /run/aj-sshd.pid)\" 2>/dev/null; rm -f /run/aj-sshd.pid; fi; sleep 1; true", timeoutSec = 30)
+        }
         val script = """
             mkdir -p /run/sshd /var/run/sshd
             if ps -ef | grep -q '[s]shd'; then echo "already running"; exit 0; fi
             /usr/sbin/sshd -p $port
             sleep 1
-            ps -ef | grep -c '[s]shd'
+            ps -ef | grep "[s]shd -p $port" | awk '{print $2}' | head -1 > /run/aj-sshd.pid
+            cat /run/aj-sshd.pid
         """.trimIndent()
         val (code, out) = Linux.run(ctx, script, timeoutSec = 60)
         return if (code == 0) "已启动，端口 $port" else "[exit $code]\n${out.trim().take(600)}"
@@ -110,7 +115,7 @@ object Sshd {
     fun stop(ctx: Context): String {
         val (code, out) = Linux.run(
             ctx,
-            "pkill -f '/usr/sbin/sshd -p ' ; sleep 1; ps -ef | grep -c '[s]shd' || true",
+            "if [ -f /run/aj-sshd.pid ]; then kill \"\$(cat /run/aj-sshd.pid)\" 2>/dev/null; rm -f /run/aj-sshd.pid; fi; sleep 1; true",
             timeoutSec = 60
         )
         return if (code == 0) "已停止" else "[exit $code]\n${out.trim().take(600)}"

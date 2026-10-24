@@ -130,8 +130,8 @@ object RouteBrain {
     private fun tidy(err: String): String {
         val s = err.replace("\n", " ").replace("\r", " ").trim()
         val i = s.indexOf("supported API model names", ignoreCase = true)
-        if (i >= 0) return "模型名不被支持 →" + s.substring(i).take(110)
-        return s.take(160)
+        if (i >= 0) return "模型名不被支持 →" + s.substring(i).take(220)
+        return s.take(260)
     }
 
     fun markFail(st: Settings, name: String, base: String, err: String) {
@@ -178,7 +178,7 @@ object RouteBrain {
                 val f = r.optInt("fails", 0)
                 if (f > 0) append(" 连败$f")
                 val le = r.optString("lastErr", "").replace("\n", " ").trim()
-                if (le.isNotEmpty()) append(" ｜ ").append(le.take(110))
+                if (le.isNotEmpty()) append(" ｜ ").append(le.take(200))
             }
             "$icon [${e.tier}] ${e.name}  $s$extra"
         }
