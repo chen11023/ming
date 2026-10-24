@@ -60,10 +60,16 @@ object Sshd {
         }.getOrDefault("127.0.0.1")
     }
 
+    private fun alive(p: Int): Boolean = runCatching {
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", p), 1200) }
+        true
+    }.getOrDefault(false)
+
     fun status(ctx: Context): String {
-        val (_, out) = Linux.run(ctx, "ps -ef | grep -c '[s]shd' || true", timeoutSec = 30)
-        val running = out.trim().lines().lastOrNull()?.trim()?.toIntOrNull() ?: 0
-        return "sshd 进程：${if (running > 0) "运行中（$running）" else "未运行"}"
+        // 每次 Linux.run 都是新的 proot 会话，ps 看不到别的会话里的 sshd，
+        // 所以直接对着端口连一下，连上就是活着（2026-10-24 实测 ps 永远返回 0）
+        val up = alive(port(ctx))
+        return "sshd 进程：${if (up) "运行中（端口 ${port(ctx)} 可连）" else "未运行"}"
     }
 
     /** 装 openssh（只装一次）+ 生成 host key + 设 root 密码，返回日志 */
@@ -78,7 +84,8 @@ object Sshd {
             chmod 700 /root/.ssh
             [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A >/dev/null 2>&1
             echo "root:${p}" | chpasswd
-            printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication yes' 'PermitEmptyPasswords no' 'UsePAM no' > /etc/ssh/sshd_config.d/aj.conf 2>/dev/null || true
+            printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' 'PermitEmptyPasswords no' 'UsePAM no' > /etc/ssh/sshd_config.d/aj.conf 2>/dev/null || true
+            grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config 2>/dev/null || printf '%s\n' 'Include /etc/ssh/sshd_config.d/*.conf' | cat - /etc/ssh/sshd_config > /tmp/_sshcfg && mv /tmp/_sshcfg /etc/ssh/sshd_config
             echo ok
         """.trimIndent()
         val (code, out) = Linux.run(ctx, script, timeoutSec = 300)
@@ -87,6 +94,7 @@ object Sshd {
 
     fun start(ctx: Context): String {
         val port = port(ctx)
+        if (alive(port)) return "已经在跑（端口 $port 可连）"
         val script = """
             mkdir -p /run/sshd /var/run/sshd
             if ps -ef | grep -q '[s]shd'; then echo "already running"; exit 0; fi

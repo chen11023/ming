@@ -20,7 +20,7 @@ object RouteBrain {
 
     private const val HEALTH_KEY = "routeHealth"
     private val COOLDOWN = longArrayOf(60_000, 180_000, 600_000, 1_800_000, 3_600_000)
-    private const val DEAD_COOLDOWN = 7_200_000L
+    private const val DEAD_COOLDOWN = 1_800_000L   // 判死也只锁 30 分钟
 
     private val MEDIA = listOf(
         "video", "image", "seedream", "cogview", "imagen", "tts", "asr",
@@ -96,8 +96,11 @@ object RouteBrain {
                 "insufficient balance", "402", "balance", "限流").any { s.contains(it) }) return "limited"
         if (listOf("invalid api key", "unauthorized", "401", "403", "authentication", "无权限")
                 .any { s.contains(it) }) return "unknown"
-        if (listOf("not found", "no such model", "model_not_found", "does not exist",
-                "不存在", "404", "invalid model").any { s.contains(it) }) return "dead"
+        // 只有明确「模型不存在」才判死；单纯一个 404（接口路径/网关）不算，
+        // 否则同账号能用的服务商会被整条锁死（2026-10-24 实测踩过）
+        if (listOf("no such model", "model_not_found", "invalid model", "model not found",
+                "模型不存在", "does not exist").any { s.contains(it) }) return "dead"
+        if (listOf("not found", "404", "不存在").any { s.contains(it) }) return "limited"
         return "unknown"
     }
 
@@ -165,6 +168,8 @@ object RouteBrain {
                 if (cool > 0) append(" 冷却${cool / 1000}s")
                 val f = r.optInt("fails", 0)
                 if (f > 0) append(" 连败$f")
+                val le = r.optString("lastErr", "").replace("\n", " ").trim()
+                if (le.isNotEmpty()) append(" ｜ ").append(le.take(70))
             }
             "$icon [${e.tier}] ${e.name}  $s$extra"
         }

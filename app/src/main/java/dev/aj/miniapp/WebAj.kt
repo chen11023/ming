@@ -107,8 +107,10 @@ object WebAj {
     }
 
     /** 后台跑起来：目标进程常驻，线程一直挂着直到被杀 */
+    @Synchronized
     fun start(ctx: Context): String {
         absorbReport(ctx)
+        if (running(ctx)) return "已经在跑，不用重启"   // 活着就别动它
         cleanup(ctx)
         val e = ensure(ctx)
         if (e != "ok") return "启动失败：$e"
@@ -211,11 +213,20 @@ object WebAj {
     }
 
     fun running(ctx: Context): Boolean {
-        // 实测端口是否真的能连（ps 里有进程不代表它在应答）
-        return runCatching {
-            java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", Settings(ctx).webPort), 1200) }
-            true
-        }.getOrDefault(false)
+        // 实测端口是否真的能连；连不上再试两次，避免启动瞬间/短暂卡顿被误判成挂了
+        // （误判会让守护线程把好好的进程杀掉重启，2026-10-24 实测就是这么抖的）
+        val port = Settings(ctx).webPort
+        // 主线程（打开对话框时）只探一次，别把界面卡住
+        val ui = android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
+        repeat(if (ui) 1 else 3) {
+            val ok = runCatching {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 1500) }
+                true
+            }.getOrDefault(false)
+            if (ok) return true
+            if (!ui) Thread.sleep(600)
+        }
+        return false
     }
 
 }
