@@ -12,6 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ---------- 0. 固定签名（不提交私钥，从 Secret 解出来） ----------
+      # 没有这个 Secret 时跳过，退回默认 debug 签名（只是不能覆盖安装）
+      - name: Decode signing key
+        run: |
+          if [ -n "${{ secrets.AJ_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.AJ_KEYSTORE_B64 }}" | base64 -d > app/aj.jks
+            ls -l app/aj.jks
+          else
+            echo "no secret, use default debug signing"
+          fi
+
       # ---------- 1. 静态 proot（aarch64，无动态依赖） ----------
       - name: Fetch static proot
         run: |

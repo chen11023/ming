@@ -22,9 +22,29 @@ android {
 
     buildFeatures { buildConfig = true }
 
+    // 固定签名：CI 每次跑的 debug.keystore 都是新的，装出来签名不同，
+    // Android 就拒绝覆盖安装。用固定密钥 aj.jks 签（CI 里从 Secret 解出来，不进仓库），以后都能直接升级。
+    val ks = file("aj.jks")
+    if (ks.exists()) {
+        signingConfigs {
+            create("fixed") {
+                storeFile = ks
+                storePassword = "ajmini123"
+                keyAlias = "aj"
+                keyPassword = "ajmini123"
+            }
+        }
+    }
+
     buildTypes {
-        debug { isMinifyEnabled = false }
-        release { isMinifyEnabled = false }
+        debug {
+            isMinifyEnabled = false
+            if (ks.exists()) signingConfig = signingConfigs.getByName("fixed")
+        }
+        release {
+            isMinifyEnabled = false
+            if (ks.exists()) signingConfig = signingConfigs.getByName("fixed")
+        }
     }
 
     compileOptions {
