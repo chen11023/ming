@@ -287,6 +287,7 @@ class LlmClient(private val settings: Settings) {
                 }.filter { it.name.isNotBlank() }
 
                 if (cancelled) return Reply(text.toString().ifBlank { null }, calls, "已停止")
+                Reply(text.toString().ifBlank { null }, calls)
             }
         } catch (e: Exception) {
             Reply(null, emptyList(), if (cancelled) "已停止" else "${e.javaClass.simpleName}: ${e.message}")
