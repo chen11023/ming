@@ -981,7 +981,8 @@ class MainActivity : Activity() {
                 val url = pbIn.text.toString().trim()
                 val k = pkIn.text.toString().trim()
                 if (url.isBlank() || k.isBlank()) {
-                    android.widget.Toast.makeText(this, "地址和 key 都要填", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(this@MainActivity, "地址和 key 都要填",
+                        android.widget.Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
                 settings.addProvider(name, url, k)
