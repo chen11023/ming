@@ -48,6 +48,8 @@ class MainActivity : Activity() {
     private lateinit var diag: TextView
     private lateinit var diagSend: android.widget.Button
     private lateinit var termHost: android.widget.FrameLayout
+    private lateinit var contentBox: android.widget.FrameLayout
+    private var settingsView: android.view.View? = null
     private lateinit var termStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,6 +94,7 @@ class MainActivity : Activity() {
             orientation = android.widget.LinearLayout.HORIZONTAL
         }
         val content = android.widget.FrameLayout(this)
+        contentBox = content
 
         val chatPage = buildChatPage()
         chatPageView = chatPage
@@ -115,7 +118,12 @@ class MainActivity : Activity() {
         val pages = listOf(chatPage, termPage, setPage)
         fun select(i: Int) {
             content.removeAllViews()
-            content.addView(pages[i])
+            if (i == 2) {
+                settingsView = buildSettingsPage()
+                content.addView(settingsView!!)
+            } else {
+                content.addView(pages[i])
+            }
             btns.forEachIndexed { idx, b ->
                 b.setTextColor(if (idx == i) 0xFF2563EB.toInt() else 0xFF6B7280.toInt())
             }
@@ -357,10 +365,6 @@ class MainActivity : Activity() {
         v.addView(modelBar(), android.widget.LinearLayout.LayoutParams(-1, -2))
         v.addView(scroll, android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
 
-        val row = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-        }
         chatInput = EditText(this).apply {
             hint = "要它做什么…"
             setSingleLine(false)
@@ -401,13 +405,24 @@ class MainActivity : Activity() {
             text = "⋯"
             setOnClickListener { showMessages() }
         }
-        row.addView(historyBtn)
-        row.addView(msgBtn)
-        row.addView(attachBtn)
-        row.addView(chatInput, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(chatStop)
-        row.addView(chatSend)
-        v.addView(row)
+        val toolsRow = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        for (b in listOf(historyBtn, msgBtn, attachBtn)) {
+            b.textSize = 13f
+            toolsRow.addView(b)
+        }
+        val inputRow = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        chatInput.minWidth = 0
+        inputRow.addView(chatInput, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+        inputRow.addView(chatStop)
+        inputRow.addView(chatSend)
+        v.addView(toolsRow)
+        v.addView(inputRow)
         return v
     }
 
@@ -997,6 +1012,7 @@ class MainActivity : Activity() {
 
         fun label(t: String) = TextView(this).apply {
             text = t
+            tag = "jkLabel"
             textSize = 13f
             setTextColor(0xFF6B7280.toInt())
             setPadding(0, 20, 0, 6)
@@ -1463,7 +1479,82 @@ class MainActivity : Activity() {
         })
         v.addView(memBar)
 
-        return android.widget.ScrollView(this).apply { addView(v) }
+        // 按小节标题拆成多页：菜单 → 点进去只看一节
+        val groups = LinkedHashMap<String, MutableList<android.view.View>>()
+        var curTitle = "其他"
+        var curList = mutableListOf<android.view.View>()
+        groups[curTitle] = curList
+        for (i in 0 until v.childCount) {
+            val c = v.getChildAt(i)
+            if (c is TextView && c.tag == "jkLabel") {
+                curTitle = c.text.toString()
+                curList = mutableListOf()
+                groups[curTitle] = curList
+            } else {
+                curList.add(c)
+            }
+        }
+        val menu = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(0, 4, 0, 24)
+        }
+        for ((title, views) in groups) {
+            if (title == "其他" && views.isEmpty()) continue
+            menu.addView(TextView(this).apply {
+                text = "▸  $title"
+                textSize = 15f
+                setPadding(30, 28, 30, 28)
+                setTextColor(if (settings.dark) 0xFFE5E7EB.toInt() else 0xFF111827.toInt())
+                setBackgroundColor(if (settings.dark) 0xFF1F2937.toInt() else 0xFFF3F4F6.toInt())
+                setOnClickListener {
+                    views.forEach { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+                    openSubPage(title, views)
+                }
+            })
+        }
+        return android.widget.ScrollView(this).apply { addView(menu) }
+    }
+
+    /** 设置里的小页：顶部返回条 + 内容 */
+    private fun openSubPage(title: String, views: List<android.view.View>) {
+        val bar = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(14, 8, 14, 8)
+        }
+        bar.addView(android.widget.Button(this).apply {
+            text = "← 设置"
+            textSize = 13f
+            setOnClickListener { showSettings() }
+        })
+        bar.addView(TextView(this).apply {
+            text = title
+            textSize = 15f
+            setPadding(16, 0, 0, 0)
+        })
+        val body = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(24, 6, 24, 28)
+        }
+        for (v in views) {
+            (v.parent as? android.view.ViewGroup)?.removeView(v)
+            body.addView(v)
+        }
+        val page = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(bar)
+            addView(android.widget.ScrollView(this@MainActivity).apply { addView(body) },
+                android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
+        }
+        contentBox.removeAllViews()
+        contentBox.addView(page)
+    }
+
+    private fun showSettings() {
+        val c = contentBox
+        c.removeAllViews()
+        settingsView = buildSettingsPage()
+        c.addView(settingsView!!)
     }
 
     // ------------------------------------------------------------ 启动
