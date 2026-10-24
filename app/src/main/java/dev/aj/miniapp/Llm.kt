@@ -769,9 +769,9 @@ class LlmClient(private val settings: Settings) {
                     }
                     return Reply(null, emptyList(), "HTTP ${resp.code}: ${raw.take(400)}")
                 }
-                val ct = resp.header("Content-Type").orEmpty()
+                val ctType = resp.header("Content-Type").orEmpty()
                 val src = resp.body?.source() ?: return Reply(null, emptyList(), "空响应")
-                if (!ct.contains("event-stream")) {
+                if (!ctType.contains("event-stream")) {
                     return parse(src.readUtf8())
                 }
 
@@ -827,9 +827,9 @@ class LlmClient(private val settings: Settings) {
                 }.filter { it.name.isNotBlank() }
 
                 val pt = seenPt
-                val ct = if (seenCt > 0) seenCt else text.length
-                if (cancelled) return Reply(text.toString().ifBlank { null }, calls, "已停止", pt, ct)
-                Reply(text.toString().ifBlank { null }, calls, null, pt, ct)
+                val ctTok = if (seenCt > 0) seenCt else text.length
+                if (cancelled) return Reply(text.toString().ifBlank { null }, calls, "已停止", pt, ctTok)
+                Reply(text.toString().ifBlank { null }, calls, null, pt, ctTok)
             }
         } catch (e: Exception) {
             Reply(null, emptyList(), if (cancelled) "已停止" else "${e.javaClass.simpleName}: ${e.message}")

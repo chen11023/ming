@@ -180,6 +180,8 @@ class MainActivity : Activity() {
     }
 
     /** 统一给按钮/输入框上色，别让它们都是系统灰 */
+    private fun dp(v: Int): Int = dp(v.toFloat())
+
     private fun skin(view: android.view.View) {
         when (view) {
             is android.widget.Button -> {
@@ -245,7 +247,7 @@ class MainActivity : Activity() {
             rootView.setBackgroundColor(bg)
             chatPageView.setBackgroundColor(bg)
             Palette.dark = settings.dark
-            root.setBackgroundColor(Palette.bg())
+            rootView.setBackgroundColor(Palette.bg())
             bubbles.setFontSize(settings.chatFont)
             loadChatBg()
             chatInput.setTextColor(fg)
