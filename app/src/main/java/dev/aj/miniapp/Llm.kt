@@ -17,6 +17,14 @@ class Settings(ctx: Context) {
         val key: String get() = Vault.decrypt(keyCipher)
     }
 
+    /** 这套配置是不是试过不支持流式（智谱 1212 那种），试过就整段返回，别再撞一次 */
+    fun noStream(baseUrl: String, model: String): Boolean =
+        sp.getBoolean("noStream:$baseUrl|$model", false)
+
+    fun markNoStream(baseUrl: String, model: String) {
+        sp.edit().putBoolean("noStream:$baseUrl|$model", true).apply()
+    }
+
     fun profiles(): MutableList<Profile> {
         val raw = sp.getString("profiles", "") ?: ""
         val out = mutableListOf<Profile>()
@@ -204,16 +212,9 @@ class LlmClient(private val settings: Settings) {
      * 流式版本：边收边把增量文字吐给 onDelta，tool_calls 按 index 拼完再返回。
      * 服务端不认 stream 时自动退回普通响应。
      */
-    private fun profileKey(): String {
-        val p = active()
-        return "noStream:" + (p?.baseUrl ?: "") + "|" + (p?.model ?: "")
-    }
+    private fun noStreamFor(): Boolean = settings.noStream(settings.baseUrl, settings.model)
 
-    private fun noStreamFor(): Boolean = sp.getBoolean(profileKey(), false)
-
-    private fun markNoStream() {
-        sp.edit().putBoolean(profileKey(), true).apply()
-    }
+    private fun markNoStream() = settings.markNoStream(settings.baseUrl, settings.model)
 
     fun chatStream(
         history: List<JSONObject>,
