@@ -253,6 +253,12 @@ class Settings(ctx: Context) {
         set(v) = sp.edit().putString("systemPrompt", v).apply()
 
     /** 网页子 AJ：开关 / 端口 / 访问口令 */
+    /** 路由大脑的健康台账（JSON 字符串），由 RouteBrain 读写 */
+    fun routeHealthRaw(): String = sp.getString("routeHealth", "") ?: ""
+    fun setRouteHealthRaw(v: String) {
+        sp.edit().putString("routeHealth", v).apply()
+    }
+
     var webOn: Boolean
         get() = sp.getBoolean("webOn", false)
         set(v) = sp.edit().putBoolean("webOn", v).apply()
@@ -260,6 +266,11 @@ class Settings(ctx: Context) {
     var webPort: Int
         get() = sp.getInt("webPort", 8787)
         set(v) = sp.edit().putInt("webPort", v).apply()
+
+    /** 外部访问地址（公网域名 / 公网 IP:端口，含隧道地址）。留空则只用局域网 IP。 */
+    var webPublic: String
+        get() = sp.getString("webPublic", "") ?: ""
+        set(v) = sp.edit().putString("webPublic", v.trim()).apply()
 
     var webToken: String
         get() {
@@ -283,6 +294,11 @@ class Settings(ctx: Context) {
         set(v) = sp.edit().putInt("sshPort", v).apply()
 
     /** 主模型失败时自动切同一服务商下的备用模型（默认开，最多再试 2 个） */
+    /** 上下文太长时，把中段压成 8 节结构摘要（多一次模型调用；关掉就退回机械省略） */
+    var compressSummary: Boolean
+        get() = sp.getBoolean("compressSummary", true)
+        set(v) = sp.edit().putBoolean("compressSummary", v).apply()
+
     var autoFallback: Boolean
         get() = sp.getBoolean("autoFallback", true)
         set(v) = sp.edit().putBoolean("autoFallback", v).apply()
@@ -520,14 +536,24 @@ class LlmClient(private val settings: Settings) {
         return base - jitter + (Math.random() * 2 * jitter).toLong()
     }
 
-    /** 备用模型：同一服务商下的其它模型，主模型挂了按顺序顶上 */
-    private fun fallbacks(): List<String> {
+    /**
+     * 候选模型链（父 AJ 的模型池）：交给路由大脑排 —— 主用服务商在前、备用在后，
+     * 档内按真实调用记下的健康度，失败的沉底但不摘除。关掉 autoFallback 就只用当前模型。
+     * 清单来自用户自己配的服务商/模型，没有任何内置名单。
+     */
+    private fun chain(): List<RouteBrain.Entry> {
         val cur = settings.model
         if (cur.isBlank()) return emptyList()
-        if (!settings.autoFallback) return emptyList()
-        return settings.currentProvider()?.models
-            ?.filter { it.isNotBlank() && it != cur }
-            ?.take(2) ?: emptyList()
+        if (!settings.autoFallback) {
+            val p = settings.currentProvider()
+            return listOf(RouteBrain.Entry(cur, "free", p?.name ?: "", settings.baseUrl, settings.apiKey))
+        }
+        val c = RouteBrain.chain(settings, RouteBrain.task, 6)
+        if (c.isEmpty()) {
+            val p = settings.currentProvider()
+            return listOf(RouteBrain.Entry(cur, "free", p?.name ?: "", settings.baseUrl, settings.apiKey))
+        }
+        return c
     }
 
     /** 401/403 是 key 或权限问题，换模型也没用，别再白试 */
@@ -545,20 +571,22 @@ class LlmClient(private val settings: Settings) {
 
     fun chat(history: List<JSONObject>, extraTools: org.json.JSONArray? = null): Reply {
         var last = Reply(null, emptyList(), "没有可用模型")
-        for (m in listOf(settings.model) + fallbacks()) {
+        for (e in chain()) {
             var attempt = 0
             while (true) {
                 attempt++
-                last = chatOnce(history, extraTools, m)
+                last = chatOnce(history, extraTools, e.name, e.base, e.key)
                 val err = last.error
                 if (err == null) {
-                    lastUsedModel = m
+                    lastUsedModel = e.name
+                    RouteBrain.markOk(settings, e.name, e.base)
                     return last
                 }
                 if (cancelled || fatalAuth(err) || attempt >= 3 || !retryable(err)) break
                 Thread.sleep(backoffMs(attempt))
             }
             if (cancelled) break
+            RouteBrain.markFail(settings, e.name, e.base, last.error ?: "")
         }
         return last
     }
@@ -566,9 +594,11 @@ class LlmClient(private val settings: Settings) {
     private fun chatOnce(
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
-        model: String = settings.model
+        model: String = settings.model,
+        base: String = settings.baseUrl,
+        key: String = settings.apiKey
     ): Reply {
-        if (!settings.configured) {
+        if (base.isBlank() || key.isBlank()) {
             return Reply(null, emptyList(), "还没填 API key，去设置页填一下")
         }
 
@@ -580,8 +610,8 @@ class LlmClient(private val settings: Settings) {
         }
 
         val req = okhttp3.Request.Builder()
-            .url("${settings.baseUrl}/chat/completions")
-            .addHeader("Authorization", "Bearer ${settings.apiKey}")
+            .url("${base.trimEnd('/')}/chat/completions")
+            .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(body.toString().toRequestBody("application/json; charset=utf-8".toOkMediaType()))
             .build()
@@ -607,10 +637,6 @@ class LlmClient(private val settings: Settings) {
      * 流式版本：边收边把增量文字吐给 onDelta，tool_calls 按 index 拼完再返回。
      * 服务端不认 stream 时自动退回普通响应。
      */
-    private fun noStreamFor(model: String): Boolean = settings.noStream(settings.baseUrl, model)
-
-    private fun markNoStream(model: String) = settings.markNoStream(settings.baseUrl, model)
-
     fun chatStream(
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
@@ -618,14 +644,15 @@ class LlmClient(private val settings: Settings) {
     ): Reply {
         var emitted = false
         var last = Reply(null, emptyList(), "没有可用模型")
-        for (m in listOf(settings.model) + fallbacks()) {
+        for (e in chain()) {
             var attempt = 0
             while (true) {
                 attempt++
-                last = chatStreamOnce(history, extraTools, m) { emitted = true; onDelta(it) }
+                last = chatStreamOnce(history, extraTools, e.name, e.base, e.key) { emitted = true; onDelta(it) }
                 val err = last.error
                 if (err == null) {
-                    lastUsedModel = m
+                    lastUsedModel = e.name
+                    RouteBrain.markOk(settings, e.name, e.base)
                     return last
                 }
                 // 已经吐过字就不能换模型重来，否则用户会看到重复内容
@@ -633,6 +660,7 @@ class LlmClient(private val settings: Settings) {
                 Thread.sleep(backoffMs(attempt))
             }
             if (cancelled || emitted) break
+            RouteBrain.markFail(settings, e.name, e.base, last.error ?: "")
         }
         return last
     }
@@ -641,15 +669,17 @@ class LlmClient(private val settings: Settings) {
         history: List<JSONObject>,
         extraTools: org.json.JSONArray? = null,
         model: String,
+        base: String = settings.baseUrl,
+        key: String = settings.apiKey,
         onDelta: (String) -> Unit
     ): Reply {
         // 有的模型（智谱部分型号）不认 stream:true，记住一次，以后这套配置直接整段返回
-        if (noStreamFor(model)) {
-            val r = chatOnce(history, extraTools, model)
+        if (settings.noStream(base, model)) {
+            val r = chatOnce(history, extraTools, model, base, key)
             r.text?.let { onDelta(it) }
             return r
         }
-        if (!settings.configured) {
+        if (base.isBlank() || key.isBlank()) {
             return Reply(null, emptyList(), "还没填 API key，去设置页填一下")
         }
 
@@ -662,8 +692,8 @@ class LlmClient(private val settings: Settings) {
         }
 
         val req = okhttp3.Request.Builder()
-            .url("${settings.baseUrl}/chat/completions")
-            .addHeader("Authorization", "Bearer ${settings.apiKey}")
+            .url("${base.trimEnd('/')}/chat/completions")
+            .addHeader("Authorization", "Bearer $key")
             .addHeader("Content-Type", "application/json")
             .post(body.toString().toRequestBody("application/json; charset=utf-8".toOkMediaType()))
             .build()
@@ -675,8 +705,8 @@ class LlmClient(private val settings: Settings) {
                 if (!resp.isSuccessful) {
                     val raw = resp.body?.string().orEmpty()
                     if (resp.code == 400 && (raw.contains("1212") || raw.contains("SSE"))) {
-                        markNoStream(model)
-                        val r = chatOnce(history, extraTools, model)
+                        settings.markNoStream(base, model)
+                        val r = chatOnce(history, extraTools, model, base, key)
                         r.text?.let { onDelta(it) }
                         return r
                     }
@@ -855,11 +885,54 @@ class LlmClient(private val settings: Settings) {
                 })
             })
         }
+    ).put(tool("read_file",
+        "读一个文本文件，带行号返回。适合看代码、日志、配置；大文件用 offset/limit 分批读。",
+        mapOf(
+            "path" to ("string" to "绝对路径，如 /root/app.py 或 /host/xxx.txt"),
+            "offset" to ("integer" to "从第几行开始（1 起），默认 1"),
+            "limit" to ("integer" to "最多读多少行，默认 200")
+        ), listOf("path"))
+    ).put(tool("write_file",
+        "把内容写进一个文件（覆盖或新建），自动建目录。写代码、写笔记、存结果用它，不要用 echo 拼字符串。",
+        mapOf(
+            "path" to ("string" to "绝对路径"),
+            "content" to ("string" to "要写入的完整内容"),
+            "append" to ("boolean" to "true 表示追加到末尾，默认覆盖")
+        ), listOf("path", "content"))
+    ).put(tool("skill",
+        "查技能说明书。不给 name 就列出这台机器上所有技能；给 name 就返回那份 SKILL.md 正文。动手做不确定的事之前先用它。",
+        mapOf("name" to ("string" to "技能名，如 ppt、pdf、xlsx；留空列清单")), emptyList())
+    ).put(tool("ask_user",
+        "停下来问用户。信息不足、要在两个方案里选、要动用户的东西之前，用这个问一句，等用户回答再继续。别自己猜。",
+        mapOf("question" to ("string" to "要问用户的一句话")), listOf("question"))
     ).let { arr ->
         // 外部工具（MCP）追加进来
         if (extra != null) for (i in 0 until extra.length()) arr.put(extra.getJSONObject(i))
         arr
     }
+}
+
+private fun tool(
+    name: String,
+    desc: String,
+    props: Map<String, Pair<String, String>>,
+    required: List<String>
+) = JSONObject().apply {
+    put("type", "function")
+    put("function", JSONObject().apply {
+        put("name", name)
+        put("description", desc)
+        put("parameters", JSONObject().apply {
+            put("type", "object")
+            put("properties", JSONObject().apply {
+                for ((k, v) in props) put(k, JSONObject().apply {
+                    put("type", v.first)
+                    put("description", v.second)
+                })
+            })
+            put("required", org.json.JSONArray().apply { for (r in required) put(r) })
+        })
+    })
 }
 
 private fun String.toRequestBody(ct: okhttp3.MediaType): okhttp3.RequestBody =

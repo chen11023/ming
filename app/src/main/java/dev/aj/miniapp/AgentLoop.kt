@@ -42,6 +42,8 @@ class AgentLoop(
 
     /** 界面提供的确认器：返回 true 才动手。没挂或设置里关了就直接放行 */
     var onConfirm: ((String) -> Boolean)? = null
+    /** 停下来问用户：入参是问题，返回用户打的字（界面负责弹框等回答） */
+    var onAsk: ((String) -> String)? = null
 
     private var statCalls = 0
     private var statChars = 0L
@@ -116,6 +118,8 @@ class AgentLoop(
         val sb = StringBuilder(settings.systemPrompt.trim())
         sb.append("\n\n## 产物输出\n")
         sb.append("图片、图表、视频、文档等产物一律写进 /out 目录（例如 /out/chart.png）。")
+        sb.append("\n文件读写工具（read_file/write_file）只在 /host 下面可用（/host 就是 App 私有目录：/host/out 产物、/host/ajhome 家目录、/host/web 网页版）。"
+                  + "读写 /host 以外的系统路径请用 sh 命令。\n")
         sb.append("写完后只回一句说明路径，不要把 base64 或 ANSI 彩色字符贴进对话——App 会自动在聊天里显示 /out 里的新文件。\n")
         sb.append("\n\n## 先查再问（不确定时的固定走法）\n")
         sb.append("不知道某个东西在哪、能不能用、怎么走 —— 不要凭印象答，也不要先问用户，先自己查：\n")
@@ -204,6 +208,8 @@ class AgentLoop(
         statCalls = 0
         statChars = 0L
         resetRepeat()
+        // 交给路由大脑做任务偏好；带图片时标记成"看图"，让它优先挑能看图的模型
+        RouteBrain.task = if (parts.isNotEmpty()) "看图 " + userText else userText
         val t0 = System.currentTimeMillis()
         try {
             turn(userText, parts)
@@ -213,7 +219,79 @@ class AgentLoop(
         }
     }
 
+    // ---------- 读文件 / 写文件 / 查技能 ----------
+    private fun readFile(path: String, offset: Int, limit: Int): String {
+        if (path.isBlank()) return "[没有给 path]"
+        val f = File(path.trim())
+        if (!f.exists()) return "[文件不存在] $path"
+        if (f.isDirectory) return "[这是目录] $path\n" + runCatching {
+            f.listFiles()?.take(200)?.joinToString("\n") { (if (it.isDirectory) "d " else "- ") + it.name }.orEmpty()
+        }.getOrDefault("")
+        return runCatching {
+            val all = f.readLines()
+            val from = (offset.coerceAtLeast(1) - 1).coerceAtMost(all.size)
+            val to = (from + limit.coerceAtLeast(1)).coerceAtMost(all.size)
+            val sb = StringBuilder()
+            for (i in from until to) sb.append(i + 1).append("\t").append(all[i]).append("\n")
+            if (to < all.size) sb.append("…（共 ${all.size} 行，读到第 $to 行，后面接着读用 offset=${to + 1}）")
+            "$path（第 ${from + 1}-$to 行 / 共 ${all.size} 行）\n" + sb
+        }.getOrElse { "[读不了] $path：${it.message}" }
+    }
+
+    private fun writeFile(path: String, content: String, append: Boolean): String {
+        if (path.isBlank()) return "[没有给 path]"
+        return runCatching {
+            val f = File(path.trim())
+            f.parentFile?.mkdirs()
+            if (append && f.exists()) f.appendText(content) else f.writeText(content)
+            val n = f.length()
+            "[已写入] ${f.absolutePath}（$n 字节${if (append) "，追加" else ""}）"
+        }.getOrElse { "[写不了] $path：${it.message}" }
+    }
+
+    private fun skillDoc(name: String): String {
+        val st = SkillsStore(ctx)
+        val list = st.names()
+        if (name.isBlank()) {
+            return if (list.isEmpty()) "[这台机器上还没有技能] 把技能放到 ${st.dir().absolutePath}/<名字>/SKILL.md"
+            else "[可用技能 ${list.size} 个] " + list.joinToString("、") + "\n读正文：skill(name=\"技能名\")"
+        }
+        val hit = list.firstOrNull { it.equals(name.trim(), true) } ?: list.firstOrNull { it.contains(name.trim(), true) }
+        if (hit == null) return "[没有技能] $name；现有：${list.joinToString("、")}"
+        val body = st.read(hit)
+        return "[技能 $hit]\n" + body.take(4000)
+    }
+
     /** 上下文压缩：太长就砍掉中段，保留开头 system 和最后十几条，避免几十轮后 400 */
+    /** 把中段对话压成 8 节结构摘要；失败就返回空，让调用方退回机械省略 */
+    private fun checkpoint(mid: List<JSONObject>): String {
+        if (mid.isEmpty()) return ""
+        var budget = 16000
+        val sb = StringBuilder()
+        for (m in mid) {
+            var t = m.optString("content", "")
+            if (t.isBlank() && m.has("tool_calls")) t = "[调用工具] " + m.optJSONArray("tool_calls").toString().take(300)
+            if (t.isBlank()) continue
+            if (t.length > 800) t = t.take(800) + "…"
+            sb.append(m.optString("role", "?")).append(": ").append(t).append("\n")
+            budget -= t.length
+            if (budget <= 0) break
+        }
+        val body = sb.toString().trim()
+        if (body.length < 200) return ""
+        return runCatching {
+            val ask = JSONObject().apply {
+                put("role", "user")
+                put("content", "把下面这段较早的对话整理成一份结构化摘要，供另一个模型接着干活、不丢关键信息。" +
+                    "只要摘要本身，不要寒暄。用这 8 节：\n" +
+                    "1 用户目标\n2 已确认的技术点/事实\n3 涉及的文件与路径\n4 遇到的错误与解决\n" +
+                    "5 待办\n6 当前进展\n7 下一步\n8 关键上下文\n\n--- 对话 ---\n" + body)
+            }
+            val r = LlmClient(settings).chat(listOf(ask))
+            (r.text ?: "").trim()
+        }.getOrDefault("")
+    }
+
     private fun compress() {
         val others = history.filter { it.optString("role") != "system" }
         val chars = others.sumOf { it.toString().length }
@@ -226,9 +304,12 @@ class AgentLoop(
         val tail = others.subList(cut, others.size).toList()
         history.clear()
         sys?.let { history += it }
+        val mid = others.subList(0, cut).toList()
+        val sum = if (settings.compressSummary) checkpoint(mid) else ""
         history += JSONObject().apply {
             put("role", "user")
-            put("content", "[前 $cut 条历史已省略]")
+            put("content", if (sum.isBlank()) "[前 $cut 条历史已省略]"
+                          else "[较早的 $cut 条历史，已整理成下面这份摘要]\n$sum")
         }
         history += JSONObject().apply {
             put("role", "assistant")
@@ -334,10 +415,13 @@ class AgentLoop(
                             "设提醒：" + runCatching {
                                 JSONObject(tc.arguments).let { it.optString("delay") + " 后 " + it.optString("text") }
                             }.getOrDefault("")
+                        tc.name == "write_file" ->
+                            "写文件：" + runCatching { JSONObject(tc.arguments).optString("path") }.getOrDefault("")
+                        tc.name == "ask_user" -> ""
                         tc.name.startsWith("mcp__") -> "调用 MCP 工具：${tc.name}"
                         else -> "执行命令：" + cmd
                     }
-                    if (!confirm(label)) {
+                    if (tc.name != "ask_user" && !confirm(label)) {
                         onEvent(Event.Thinking("已拒绝 —— $label".take(160)))
                         history += JSONObject().apply {
                             put("role", "tool")
@@ -348,6 +432,25 @@ class AgentLoop(
                     }
 
                     val rawResult = when {
+                        tc.name == "read_file" -> {
+                            val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            readFile(a.optString("path", ""), a.optInt("offset", 1), a.optInt("limit", 200))
+                        }
+                        tc.name == "write_file" -> {
+                            val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            writeFile(a.optString("path", ""), a.optString("content", ""), a.optBoolean("append", false))
+                        }
+                        tc.name == "skill" -> {
+                            val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            skillDoc(a.optString("name", ""))
+                        }
+                        tc.name == "ask_user" -> {
+                            val a = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
+                            val q = a.optString("question", "").ifBlank { "（问题为空）" }
+                            onEvent(Event.Thinking("等你回答：$q".take(160)))
+                            val ans = onAsk?.invoke(q) ?: ""
+                            if (ans.isBlank()) "[宿主未回答]" else "宿主回答：$ans"
+                        }
                         tc.name == "remind" -> {
                             val args = runCatching { JSONObject(tc.arguments) }.getOrDefault(JSONObject())
                             val d = Remind.parseDelay(args.optString("delay", "10"))

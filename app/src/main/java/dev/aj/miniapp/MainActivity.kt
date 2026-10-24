@@ -64,6 +64,7 @@ class MainActivity : Activity() {
         runCatching { Sched.arm(this) }
         agent = AgentLoop(this, settings, envStore) { ev -> onAgentEvent(ev) }
         agent.onConfirm = { what -> askConfirm(what) }
+        agent.onAsk = { q -> askUserInline(q) }
         runCatching {
             tts = android.speech.tts.TextToSpeech(this) { st ->
                 if (st != android.speech.tts.TextToSpeech.SUCCESS) tts = null
@@ -177,6 +178,38 @@ class MainActivity : Activity() {
         }
         runCatching { latch.await(120, java.util.concurrent.TimeUnit.SECONDS) }
         return yes
+    }
+
+    /** 模型主动停下来问人：弹输入框，等回答（最长 5 分钟） */
+    private fun askUserInline(q: String): String {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return ""
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var ans = ""
+        runOnUiThread {
+            val input = android.widget.EditText(this).apply {
+                hint = "在这里回答"
+                setSingleLine(false)
+                minLines = 2
+            }
+            val box = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(40, 20, 40, 0)
+                addView(android.widget.TextView(this@MainActivity).apply {
+                    text = q.take(600); textSize = 14f
+                })
+                addView(input)
+            }
+            val d = android.app.AlertDialog.Builder(this)
+                .setTitle("模型在问你")
+                .setView(box)
+                .setPositiveButton("回答") { _, _ -> ans = input.text.toString(); latch.countDown() }
+                .setNegativeButton("跳过") { _, _ -> latch.countDown() }
+                .setOnCancelListener { latch.countDown() }
+                .create()
+            d.show()
+        }
+        runCatching { latch.await(300, java.util.concurrent.TimeUnit.SECONDS) }
+        return ans
     }
 
     /** 朗读、通知：完成时用 */
@@ -598,18 +631,39 @@ class MainActivity : Activity() {
     private fun showWebAj() {
         val msg = android.widget.TextView(this).apply {
             text = "读取中…"
-            setPadding(48, 24, 48, 0)
+            setPadding(48, 8, 48, 0)
             textSize = 13f
+        }
+        // 外部地址：留给用户自己填（公网域名 / 公网 IP:端口 / 隧道地址）。留空就只显示局域网 IP。
+        val pub = android.widget.EditText(this).apply {
+            setSingleLine(true)
+            hint = "外部地址，如 https://abc.example.com 或 1.2.3.4:8787（可不填）"
+            setText(settings.webPublic)
+            textSize = 13f
+        }
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(24, 8, 24, 0)
+            addView(
+                android.widget.TextView(this@MainActivity).apply {
+                    text = "外部访问地址（自己填，留空只用局域网）"
+                    textSize = 12f
+                    setPadding(24, 8, 24, 0)
+                }
+            )
+            addView(pub)
+            addView(msg)
         }
         val dlg = android.app.AlertDialog.Builder(this)
             .setTitle("网页子 AJ")
-            .setView(msg)
+            .setView(box)
             .setPositiveButton("启动", null)
             .setNeutralButton("换口令", null)
             .setNegativeButton("停止", null)
             .create()
         dlg.setOnShowListener {
             dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                settings.webPublic = pub.text.toString()
                 msg.text = "启动中…（首次解压文件，约十几秒）"
                 thread {
                     val log = WebAj.start(this)
@@ -619,10 +673,12 @@ class MainActivity : Activity() {
                 }
             }
             dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                settings.webPublic = pub.text.toString()
                 settings.webToken = ""
                 runOnUiThread { msg.text = "口令已换，重新「启动」后生效。\n\n" + WebAj.info(this) }
             }
             dlg.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                settings.webPublic = pub.text.toString()
                 thread {
                     WebAj.stop(this)
                     settings.webOn = false
@@ -1422,7 +1478,24 @@ class MainActivity : Activity() {
                 setOnClickListener { settings.chatFont = settings.chatFont + 1f; applyTheme() }
             })
         })
-        v.addView(chk("主模型挂了自动切备用（同服务商，最多 2 个）", { settings.autoFallback }, { settings.autoFallback = it }))
+        v.addView(chk("路由大脑：主模型挂了自动换（含别的服务商，按健康度排）", { settings.autoFallback }, { settings.autoFallback = it }))
+        v.addView(chk("上下文太长时压成结构摘要（多一次模型调用，省上下文）", { settings.compressSummary }, { settings.compressSummary = it }))
+        v.addView(android.widget.Button(this@MainActivity).apply {
+            text = "路由大脑：看模型健康度"
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle("模型健康度（来自真实调用结果）")
+                    .setMessage(RouteBrain.summary(settings))
+                    .setPositiveButton("知道了", null)
+                    .setNeutralButton("清空记录") { _, _ ->
+                        settings.setRouteHealthRaw("{}")
+                        android.widget.Toast.makeText(
+                            this@MainActivity, "已清空", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    .show()
+            }
+        })
         v.addView(android.widget.Button(this@MainActivity).apply {
             text = "SSH 入口（别人连进这台手机）"
             setOnClickListener { showSsh() }
